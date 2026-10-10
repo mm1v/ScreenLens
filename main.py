@@ -40,7 +40,7 @@ def play_success_beep() -> None:
 def parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="ScreenLens 3.0 — умный захват области экрана, OCR, QR-сканер, перевод и Gemini Vision."
+        description="ScreenLens 0.0.1 — умный захват области экрана, OCR, QR-сканер, перевод и Gemini Vision."
     )
     parser.add_argument(
         "--daemon",
@@ -142,13 +142,13 @@ def run_pipeline(
     debug: bool = False,
     logger: Optional[logging.Logger] = None,
 ) -> int:
-    """Main orchestration pipeline for ScreenLens 3.0."""
+    """Main orchestration pipeline for ScreenLens 0.0.1."""
     if logger is None:
         log_level = logging.DEBUG if debug else logging.INFO
         logger = setup_logger("screenlens", level=log_level)
 
     print("=" * 60, flush=True)
-    print("                ScreenLens 3.0 (Smart Pipeline)", flush=True)
+    print("                ScreenLens 0.0.1 (Smart Pipeline)", flush=True)
     print("=" * 60, flush=True)
 
     # 1. Determine capture area
@@ -295,7 +295,7 @@ def run_daemon_mode(
     logger = setup_logger("screenlens", level=log_level)
 
     print("=" * 60, flush=True)
-    print("           ScreenLens 3.0 — Фоновый режим (Daemon)", flush=True)
+    print("           ScreenLens 0.0.1 — Фоновый режим (Daemon)", flush=True)
     print("=" * 60, flush=True)
     print(f"\n[АКТИВЕН] Хоткей: {hotkey_combo}", flush=True)
     print("          Нажмите эту комбинацию в ЛЮБОЙ программе для захвата экрана.", flush=True)

@@ -62,7 +62,7 @@ class SystemTrayApp:
         self._icon = pystray.Icon(
             name="ScreenLens",
             icon=image,
-            title="ScreenLens — Google Lens для ПК",
+            title="ScreenLens v0.0.1 — Google Lens для ПК",
             menu=self._create_menu(),
         )
 

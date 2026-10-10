@@ -24,7 +24,7 @@ class SettingsWindow:
 
         parent = master or (tk._default_root if tk._default_root and getattr(tk._default_root, "winfo_exists", lambda: False)() else None)
         win = tk.Toplevel(parent) if parent else tk.Tk()
-        win.title("Настройки ScreenLens")
+        win.title("Настройки ScreenLens v0.0.1")
         win.geometry("490x580")
         win.minsize(460, 520)
         win.resizable(True, True)

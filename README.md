@@ -1,4 +1,4 @@
-# 🔍 ScreenLens (v3.0 Desktop Edition)
+# 🔍 ScreenLens (v0.0.1 Desktop Edition)
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](https://www.microsoft.com/)
