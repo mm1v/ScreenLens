@@ -126,7 +126,7 @@ def build_proxy_opener(
 
 
 class GeminiVisionClient:
-    """Client for Google Gemini multimodal vision models (Gemini 2.0 Flash / 1.5 Flash)."""
+    """Client for Google Gemini multimodal vision models (Gemini 3.5 Flash Lite)."""
 
     DEFAULT_MODEL = "gemini-3.5-flash-lite"
     MODEL_ALIASES = {

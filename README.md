@@ -4,9 +4,9 @@
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](https://www.microsoft.com/)
 [![License MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![OCR Dual Engine](https://img.shields.io/badge/OCR-Windows%20Media%20%2B%20Tesseract-orange.svg)](#)
-[![AI Gemini 2.0 Flash](https://img.shields.io/badge/AI-Google%20Gemini%202.0%20Flash-8E24AA.svg)](https://aistudio.google.com/)
+[![AI Gemini 3.5 Flash Lite](https://img.shields.io/badge/AI-Google%20Gemini%203.5%20Flash%20Lite-8E24AA.svg)](https://aistudio.google.com/)
 
-> **ScreenLens** — полноценное открытое Windows-приложение (аналог Google Lens и PowerToys Text Extractor), работающее в системном трее, с глобальным хоткеем, распознаванием текста, автопереводом, QR-сканером и мультимодальным ИИ-анализом на базе Google Gemini 2.0 Flash.
+> **ScreenLens** — полноценное открытое Windows-приложение (аналог Google Lens и PowerToys Text Extractor), работающее в системном трее, с глобальным хоткеем, распознаванием текста, автопереводом, QR-сканером и мультимодальным ИИ-анализом на базе Google Gemini (`gemini-3.5-flash-lite`).
 
 ---
 
@@ -21,7 +21,7 @@
 - ⚡ **Плавающая панель действий (Floating Action HUD)**:
   - 📋 Копирование распознанного текста в один клик.
   - 🌐 Мгновенный перевод на русский/английский язык (50 мс).
-  - 🤖 Мультимодальный анализ в Gemini 2.0 Flash: объяснение кода, решение формул и поиск ошибок на снимке.
+  - 🤖 Мультимодальный анализ в Gemini 3.5 Flash Lite: объяснение кода, решение формул и поиск ошибок на снимке.
   - 🔍 Быстрый переход в визуальный поиск Google Lens.
 - 📱 **QR & Barcode сканер**: автоматическое обнаружение ссылок и данных с QR-кодов.
 - 📜 **История захватов**: локальная база SQLite с предпросмотром картинок, текстов и переводов.
@@ -46,7 +46,7 @@ ScreenLens/
 │   ├── hotkey.py           # Win32 RegisterHotKey слушатель скан-кодов
 │   ├── clipboard.py        # Управление системным буфером обмена
 │   ├── qr.py               # Детектор и декодер QR-кодов (OpenCV)
-│   ├── gemini.py           # Мультимодальный клиент Google Gemini 2.0 Flash
+│   ├── gemini.py           # Мультимодальный клиент Google Gemini 3.5 Flash Lite
 │   ├── actions.py          # Вспомогательные действия (перевод, браузер)
 │   └── models.py           # Строгие Dataclass-модели
 │

@@ -82,7 +82,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--gemini",
         action="store_true",
-        help="Включить мультимодальный ИИ-анализ области через Google Gemini 2.0 Flash.",
+        help="Включить мультимодальный ИИ-анализ области через Google Gemini 3.5 Flash Lite.",
     )
     parser.add_argument(
         "--gemini-prompt",
@@ -244,7 +244,7 @@ def run_pipeline(
 
     # 6. Gemini Vision analysis
     if use_gemini or gemini_prompt:
-        print("\n[ИИ-АНАЛИЗ] Запрос к Google Gemini 2.0 Flash...", flush=True)
+        print("\n[ИИ-АНАЛИЗ] Запрос к Google Gemini 3.5 Flash Lite...", flush=True)
         gemini_client = GeminiVisionClient(api_key=gemini_key, logger=logger)
         prompt = gemini_prompt or (
             "Опиши подробно, что изображено на этом снимке экрана. "
@@ -253,7 +253,7 @@ def run_pipeline(
         try:
             ai_response = gemini_client.analyze_image(shot_result.image_path, prompt=prompt)
             print("\n" + "*" * 60, flush=True)
-            print("             ОТВЕТ GEMINI 2.0 FLASH", flush=True)
+            print("         ОТВЕТ GEMINI 3.5 FLASH LITE", flush=True)
             print("*" * 60, flush=True)
             print(ai_response, flush=True)
             print("*" * 60, flush=True)
@@ -303,7 +303,7 @@ def run_daemon_mode(
     if translate_to:
         print(f"          Автоперевод: включён (-> {translate_to.upper()}).", flush=True)
     if use_gemini:
-        print("          Gemini Vision: включён (Gemini 2.0 Flash).", flush=True)
+        print("          Gemini Vision: включён (Gemini 3.5 Flash Lite).", flush=True)
     print("          Для остановки нажмите Ctrl+C в этой консоли.\n", flush=True)
 
     def on_hotkey_pressed() -> None:
