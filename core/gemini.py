@@ -488,7 +488,7 @@ class GeminiVisionClient:
             if exc.code == 400 and ("User location is not supported" in err_msg or "FAILED_PRECONDITION" in err_msg):
                 raise RuntimeError(
                     "Ошибка Gemini API (400): Текущая локация IP-адреса не поддерживается Google Gemini. "
-                    "В v2RayTun переключитесь на профиль 🇺🇸 США или 🇳🇱 Нидерланды (IP Timeweb блокируется Google)."
+                    "В v2RayTun переключитесь на профиль США или Нидерланды (IP Timeweb блокируется Google)."
                 ) from exc
             if exc.code == 404:
                 raise RuntimeError(

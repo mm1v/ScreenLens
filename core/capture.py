@@ -268,8 +268,8 @@ class ScreenAreaSelector:
                         fn()
                 except queue.Empty:
                     break
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._logger.exception("Ошибка при выполнении задачи в очереди UI: %s", exc)
             if not is_destroyed.is_set():
                 try:
                     root.after(30, process_ui_queue)
@@ -725,24 +725,31 @@ class ScreenAreaSelector:
 
                         ans = client.analyze_image(shot.image_path, prompt=prompt)
 
-                        def set_ans():
+                        def set_ans(res_text=ans, ctrl=controller):
                             if is_destroyed.is_set():
                                 return
                             txt_res.delete("1.0", tk.END)
-                            txt_res.insert(tk.END, ans)
-                            lines = len(ans.splitlines())
+                            txt_res.insert(tk.END, res_text)
+                            lines = len(res_text.splitlines())
                             txt_res.config(height=min(10, max(5, lines)))
-                            controller.update_geometry()
+                            ctrl.update_geometry()
                             if db:
-                                db.add_history(image_path=str(shot.image_path), ocr_text="", gemini_result=ans)
+                                db.add_history(image_path=str(shot.image_path), ocr_text="", gemini_result=res_text)
 
                         post_to_ui(set_ans)
                     except Exception as exc:
-                        self._logger.exception("Ошибка при обращении к Gemini Vision: %s", exc)
-                        def show_err():
+                        err_msg = str(exc)
+                        self._logger.exception("Ошибка при обращении к Gemini Vision: %s", err_msg)
+
+                        def show_err(msg=err_msg, ctrl=controller):
+                            if is_destroyed.is_set():
+                                return
                             txt_res.delete("1.0", tk.END)
-                            txt_res.insert(tk.END, f"Ошибка: {exc}")
-                            controller.update_geometry()
+                            txt_res.insert(tk.END, f"Ошибка: {msg}")
+                            lines = len(msg.splitlines())
+                            txt_res.config(height=min(10, max(5, lines)))
+                            ctrl.update_geometry()
+
                         post_to_ui(show_err)
 
                 threading.Thread(target=ai_worker, daemon=True).start()

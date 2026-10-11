@@ -765,9 +765,42 @@ class TestGoogleLensSelection(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_ai_worker_exception_display_without_closure_leak(self):
+        """Verifies that an exception in background worker successfully displays in txt_res without closure NameError."""
+        import queue
+        root = tk.Tk()
+        try:
+            txt_res = tk.Text(root, height=4)
+            txt_res.pack()
+            txt_res.insert(tk.END, "Запрос к Gemini Vision...\n")
+
+            ui_queue = queue.Queue()
+            def worker():
+                try:
+                    raise RuntimeError("Тестовая ошибка Gemini API (400)")
+                except Exception as exc:
+                    err_msg = str(exc)
+                    def show_err(msg=err_msg):
+                        txt_res.delete("1.0", tk.END)
+                        txt_res.insert(tk.END, f"Ошибка: {msg}")
+                    ui_queue.put(show_err)
+
+            worker()
+            # Drain queue on main thread
+            while not ui_queue.empty():
+                fn = ui_queue.get_nowait()
+                fn()
+
+            content = txt_res.get("1.0", tk.END)
+            self.assertIn("Ошибка: Тестовая ошибка Gemini API (400)", content)
+            self.assertNotIn("Запрос к Gemini Vision", content)
+        finally:
+            root.destroy()
+
 
 if __name__ == "__main__":
     import time
     unittest.main()
+
 
 
