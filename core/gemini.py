@@ -129,14 +129,25 @@ def build_proxy_opener(
     return urllib.request.build_opener()
 
 
+DOT_RESOLVERS = (
+    ("dns.comss.one", ("212.109.195.93", "195.133.25.16", "83.220.169.155")),
+    ("dns.dns-ai.ru", ("186.246.48.217", "192.144.59.14", "186.246.49.127")),
+)
+DOT_PORT = 853
 DNS_AI_BOOTSTRAP_IPS = ("186.246.48.217", "192.144.59.14", "186.246.49.127")
 DNS_AI_HOST = "dns.dns-ai.ru"
 DNS_AI_PORT = 853
-DEFAULT_FALLBACK_SNI_IPS = ("191.44.41.215", "191.44.41.79")
+DEFAULT_FALLBACK_SNI_IPS = (
+    "132.243.112.221",
+    "157.22.178.170",
+    "191.44.41.215",
+    "191.44.41.79",
+)
 TARGET_HOST = "generativelanguage.googleapis.com"
 
 _cached_dns_ai_ip: Optional[str] = None
 _cached_dns_ai_time: float = 0.0
+_cooldown_sni_ips: set[str] = set()
 
 
 def _build_dns_query(domain: str) -> bytes:
@@ -204,59 +215,74 @@ def _parse_dns_response(data: bytes) -> list[str]:
     return ips
 
 
-def resolve_via_dns_ai(
+def resolve_via_dot(
     domain: str = TARGET_HOST,
-    timeout: float = 3.0,
+    timeout: float = 2.5,
     logger: Optional[logging.Logger] = None,
 ) -> list[str]:
-    """Resolves domain via DNS-over-TLS (DoT port 853) through dns.dns-ai.ru bootstrap IPs."""
+    """Resolves domain via DNS-over-TLS (DoT port 853) through comss.one and dns-ai.ru bootstrap IPs."""
     query_msg = _build_dns_query(domain)
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
 
-    for bootstrap_ip in DNS_AI_BOOTSTRAP_IPS:
-        sock = None
-        try:
-            # Low-level direct socket without third-party hooks / deadlocks
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(timeout)
-            tls_sock = ctx.wrap_socket(sock, server_hostname=DNS_AI_HOST)
-            tls_sock.connect((bootstrap_ip, DNS_AI_PORT))
-            tls_sock.sendall(query_msg)
+    results: list[str] = []
+    for host, bootstrap_ips in DOT_RESOLVERS:
+        for bootstrap_ip in bootstrap_ips:
+            sock = None
+            try:
+                # Low-level direct socket without third-party hooks / deadlocks
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout)
+                tls_sock = ctx.wrap_socket(sock, server_hostname=host)
+                tls_sock.connect((bootstrap_ip, DOT_PORT))
+                tls_sock.sendall(query_msg)
 
-            len_prefix = tls_sock.recv(2)
-            if len(len_prefix) < 2:
+                len_prefix = tls_sock.recv(2)
+                if len(len_prefix) < 2:
+                    tls_sock.close()
+                    continue
+                resp_len = struct.unpack("!H", len_prefix)[0]
+                resp_data = b""
+                while len(resp_data) < resp_len:
+                    chunk = tls_sock.recv(resp_len - len(resp_data))
+                    if not chunk:
+                        break
+                    resp_data += chunk
                 tls_sock.close()
-                continue
-            resp_len = struct.unpack("!H", len_prefix)[0]
-            resp_data = b""
-            while len(resp_data) < resp_len:
-                chunk = tls_sock.recv(resp_len - len(resp_data))
-                if not chunk:
-                    break
-                resp_data += chunk
-            tls_sock.close()
 
-            found = _parse_dns_response(resp_data)
-            if found:
+                found = _parse_dns_response(resp_data)
+                for ip in found:
+                    if ip not in results:
+                        results.append(ip)
+                if results:
+                    if logger:
+                        logger.debug("DoT (%s) resolved %s via %s: %s", host, domain, bootstrap_ip, found)
+                    return results
+            except Exception as exc:
                 if logger:
-                    logger.debug("DNS-AI DoT resolved %s via %s: %s", domain, bootstrap_ip, found)
-                return found
-        except Exception as exc:
-            if logger:
-                logger.debug("DNS-AI DoT query failed via %s: %s", bootstrap_ip, exc)
-            if sock:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
+                    logger.debug("DoT query to %s failed via %s: %s", host, bootstrap_ip, exc)
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+    return results
 
-    return []
+
+def resolve_via_dns_ai(
+    domain: str = TARGET_HOST,
+    timeout: float = 2.5,
+    logger: Optional[logging.Logger] = None,
+) -> list[str]:
+    """Resolves domain via DoT (alias for backwards compatibility)."""
+    return resolve_via_dot(domain, timeout, logger)
 
 
 def verify_sni_proxy(ip: str, host: str = TARGET_HOST, timeout: float = 1.5) -> bool:
     """Verifies that the candidate IP completes TLS handshake with host SNI."""
+    if ip in _cooldown_sni_ips:
+        return False
     try:
         ctx = ssl.create_default_context()
         with socket.create_connection((ip, 443), timeout=timeout) as s:
@@ -274,21 +300,26 @@ def get_active_sni_proxy_ip(
     global _cached_dns_ai_ip, _cached_dns_ai_time
     now = time.time()
 
-    if not force_refresh and _cached_dns_ai_ip and (now - _cached_dns_ai_time < 3600):
+    if (
+        not force_refresh
+        and _cached_dns_ai_ip
+        and (now - _cached_dns_ai_time < 3600)
+        and (_cached_dns_ai_ip not in _cooldown_sni_ips)
+    ):
         return _cached_dns_ai_ip
 
     candidates: list[str] = []
     try:
-        resolved = resolve_via_dns_ai(logger=logger)
+        resolved = resolve_via_dot(domain=TARGET_HOST, logger=logger)
         for ip in resolved:
-            if ip not in candidates:
+            if ip not in candidates and ip not in _cooldown_sni_ips:
                 candidates.append(ip)
     except Exception as exc:
         if logger:
-            logger.debug("DNS-AI resolution error: %s", exc)
+            logger.debug("DoT resolution error: %s", exc)
 
     for fallback_ip in DEFAULT_FALLBACK_SNI_IPS:
-        if fallback_ip not in candidates:
+        if fallback_ip not in candidates and fallback_ip not in _cooldown_sni_ips:
             candidates.append(fallback_ip)
 
     for candidate in candidates:
@@ -296,11 +327,11 @@ def get_active_sni_proxy_ip(
             _cached_dns_ai_ip = candidate
             _cached_dns_ai_time = now
             if logger:
-                logger.info("Selected active DNS-AI SNI proxy: %s", candidate)
+                logger.info("Selected active SNI proxy: %s", candidate)
             return candidate
 
     if logger:
-        logger.warning("No responsive DNS-AI SNI proxy found among candidates: %s", candidates)
+        logger.warning("No responsive SNI proxy found among candidates: %s", candidates)
     return None
 
 
@@ -340,15 +371,15 @@ def build_gemini_opener(
     use_dns_ai: bool = True,
     logger: Optional[logging.Logger] = None,
 ) -> urllib.request.OpenerDirector:
-    """Builds opener: routes via DNS-AI SNI proxy if enabled, else falls back to proxy_url / direct."""
+    """Builds opener: routes via SNI proxy if enabled, else falls back to proxy_url / direct."""
     if use_dns_ai:
         sni_ip = get_active_sni_proxy_ip(logger=logger)
         if sni_ip:
             if logger:
-                logger.info("Routing Gemini API via DNS-AI SNI proxy (%s)", sni_ip)
+                logger.info("Routing Gemini API via SNI proxy (%s)", sni_ip)
             return urllib.request.build_opener(DNSAIHTTPSHandler(sni_ip))
         elif logger:
-            logger.warning("DNS-AI proxy unavailable, falling back to standard proxy / direct connection")
+            logger.warning("DNS-AI/Comss SNI proxy unavailable, falling back to standard proxy / direct connection")
 
     return build_proxy_opener(proxy_url, logger)
 
@@ -402,6 +433,7 @@ class GeminiVisionClient:
         self._model = self.MODEL_ALIASES.get(model, model)
         self._use_dns_ai = use_dns_ai
         self._proxy_url = resolve_proxy(proxy_url, self._logger)
+        self._active_sni_ip = get_active_sni_proxy_ip(logger=self._logger) if self._use_dns_ai else None
         self._opener = build_gemini_opener(
             proxy_url=self._proxy_url,
             use_dns_ai=self._use_dns_ai,
@@ -486,6 +518,22 @@ class GeminiVisionClient:
             err_msg = exc.read().decode("utf-8", errors="replace")
             self._logger.error("Gemini API error (%d): %s", exc.code, err_msg)
             if exc.code == 400 and ("User location is not supported" in err_msg or "FAILED_PRECONDITION" in err_msg):
+                if self._use_dns_ai and self._active_sni_ip:
+                    _cooldown_sni_ips.add(self._active_sni_ip)
+                    next_sni = get_active_sni_proxy_ip(logger=self._logger, force_refresh=True)
+                    if next_sni and next_sni != self._active_sni_ip:
+                        self._active_sni_ip = next_sni
+                        self._opener = urllib.request.build_opener(DNSAIHTTPSHandler(next_sni))
+                        try:
+                            with self._opener.open(req, timeout=30) as retry_resp:
+                                parsed = json.loads(retry_resp.read().decode("utf-8"))
+                                candidates = parsed.get("candidates", [])
+                                if not candidates:
+                                    return "Модель не вернула ответа."
+                                parts = candidates[0].get("content", {}).get("parts", [])
+                                return "".join(part.get("text", "") for part in parts).strip()
+                        except Exception as retry_exc:
+                            self._logger.warning("Retry with alternate SNI proxy %s failed: %s", next_sni, retry_exc)
                 raise RuntimeError(
                     "Ошибка Gemini API (400): Текущая локация IP-адреса не поддерживается Google Gemini. "
                     "В v2RayTun переключитесь на профиль США или Нидерланды (IP Timeweb блокируется Google)."
@@ -499,7 +547,24 @@ class GeminiVisionClient:
         except Exception as exc:
             if self._use_dns_ai:
                 global _cached_dns_ai_ip
+                if self._active_sni_ip:
+                    _cooldown_sni_ips.add(self._active_sni_ip)
                 _cached_dns_ai_ip = None
+                # Try one automatic failover to next SNI proxy
+                next_sni = get_active_sni_proxy_ip(logger=self._logger, force_refresh=True)
+                if next_sni and next_sni != self._active_sni_ip:
+                    self._active_sni_ip = next_sni
+                    self._opener = urllib.request.build_opener(DNSAIHTTPSHandler(next_sni))
+                    try:
+                        with self._opener.open(req, timeout=30) as retry_resp:
+                            parsed = json.loads(retry_resp.read().decode("utf-8"))
+                            candidates = parsed.get("candidates", [])
+                            if not candidates:
+                                return "Модель не вернула ответа."
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            return "".join(part.get("text", "") for part in parts).strip()
+                    except Exception as retry_exc:
+                        self._logger.warning("Retry with alternate SNI proxy %s failed: %s", next_sni, retry_exc)
             self._logger.error("Network or parsing error in Gemini client: %s", exc)
             raise RuntimeError(f"Сбой соединения с Gemini API: {exc}") from exc
 
