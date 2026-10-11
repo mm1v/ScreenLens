@@ -688,10 +688,12 @@ class ScreenAreaSelector:
                     g_key = (fresh_settings.gemini_api_key if fresh_settings else "").strip()
                     g_model = fresh_settings.gemini_model if fresh_settings else "gemini-3.5-flash-lite"
                     g_proxy = (fresh_settings.gemini_proxy if fresh_settings else "").strip()
+                    g_dns_ai = fresh_settings.gemini_use_dns_ai if fresh_settings else True
                     client = GeminiVisionClient(
                         api_key=g_key or None,
                         model=g_model,
                         proxy_url=g_proxy or None,
+                        use_dns_ai=g_dns_ai,
                         logger=self._logger,
                     )
                     if not client.is_configured:

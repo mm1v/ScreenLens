@@ -216,6 +216,20 @@ class SettingsWindow:
         )
         chk_hud.pack(anchor=tk.W, pady=4)
 
+        dns_ai_var = tk.BooleanVar(value=settings.gemini_use_dns_ai)
+        chk_dns_ai = tk.Checkbutton(
+            frame,
+            text="⚡ Обход гео-блокировок Gemini (DNS-AI без VPN)",
+            variable=dns_ai_var,
+            bg="#181c24",
+            fg="#00e5ff",
+            selectcolor="#222834",
+            activebackground="#181c24",
+            activeforeground="#00e5ff",
+            font=("Segoe UI", 9),
+        )
+        chk_dns_ai.pack(anchor=tk.W, pady=4)
+
         # Save Button
         def save():
             new_settings = AppSettings(
@@ -225,6 +239,8 @@ class SettingsWindow:
                 translate_lang=tr_lang_cb.get().strip(),
                 gemini_api_key=key_ent.get().strip(),
                 gemini_model=settings.gemini_model,
+                gemini_proxy=settings.gemini_proxy,
+                gemini_use_dns_ai=dns_ai_var.get(),
                 ai_enabled=ai_var.get(),
                 sound_enabled=sound_var.get(),
                 autostart=auto_var.get(),

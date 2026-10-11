@@ -97,6 +97,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Google AI Studio API ключ (по умолчанию берётся из переменной GEMINI_API_KEY).",
     )
     parser.add_argument(
+        "--no-dns-ai",
+        action="store_true",
+        help="Отключить автоматический обход гео-блокировки Gemini через DNS-AI.",
+    )
+    parser.add_argument(
         "--lens",
         action="store_true",
         help="Открыть визуальный поиск Google Lens в браузере.",
@@ -138,6 +143,7 @@ def run_pipeline(
     check_qr: bool = True,
     tesseract_path: Optional[str] = None,
     coords: Optional[list[int]] = None,
+    no_dns_ai: bool = False,
     auto_copy: bool = True,
     debug: bool = False,
     logger: Optional[logging.Logger] = None,
@@ -245,7 +251,11 @@ def run_pipeline(
     # 6. Gemini Vision analysis
     if use_gemini or gemini_prompt:
         print("\n[ИИ-АНАЛИЗ] Запрос к Google Gemini 3.5 Flash Lite...", flush=True)
-        gemini_client = GeminiVisionClient(api_key=gemini_key, logger=logger)
+        gemini_client = GeminiVisionClient(
+            api_key=gemini_key,
+            use_dns_ai=not no_dns_ai,
+            logger=logger,
+        )
         prompt = gemini_prompt or (
             "Опиши подробно, что изображено на этом снимке экрана. "
             "Если здесь ошибка, код или вопрос — объясни суть и предложи решение."
@@ -287,6 +297,7 @@ def run_daemon_mode(
     open_lens: bool,
     check_qr: bool,
     tesseract_path: Optional[str],
+    no_dns_ai: bool,
     auto_copy: bool,
     debug: bool,
 ) -> None:
@@ -317,6 +328,7 @@ def run_daemon_mode(
             open_lens=open_lens,
             check_qr=check_qr,
             tesseract_path=tesseract_path,
+            no_dns_ai=no_dns_ai,
             auto_copy=auto_copy,
             debug=debug,
             logger=logger,
@@ -355,6 +367,7 @@ def main() -> None:
             open_lens=args.lens,
             check_qr=check_qr,
             tesseract_path=args.tesseract_path,
+            no_dns_ai=args.no_dns_ai,
             auto_copy=auto_copy,
             debug=args.debug,
         )
@@ -371,6 +384,7 @@ def main() -> None:
         check_qr=check_qr,
         tesseract_path=args.tesseract_path,
         coords=args.coords,
+        no_dns_ai=args.no_dns_ai,
         auto_copy=auto_copy,
         debug=args.debug,
     )

@@ -46,6 +46,14 @@ class TestStorageSecurity(unittest.TestCase):
         self.assertTrue(raw_in_db.startswith("DPAPI:"))
         self.assertNotIn(raw_key, raw_in_db)
 
+    def test_database_dns_ai_setting(self):
+        settings = self.db.get_settings()
+        self.assertTrue(settings.gemini_use_dns_ai)
+        settings.gemini_use_dns_ai = False
+        self.db.save_settings(settings)
+        loaded = self.db.get_settings()
+        self.assertFalse(loaded.gemini_use_dns_ai)
+
 
 if __name__ == "__main__":
     unittest.main()

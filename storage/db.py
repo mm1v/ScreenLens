@@ -82,6 +82,7 @@ class AppSettings:
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash-lite"
     gemini_proxy: str = ""
+    gemini_use_dns_ai: bool = True
     ai_enabled: bool = True
     sound_enabled: bool = True
     autostart: bool = False
@@ -112,6 +113,7 @@ class DatabaseManager:
         "gemini_api_key": "",
         "gemini_model": "gemini-3.5-flash-lite",
         "gemini_proxy": "",
+        "gemini_use_dns_ai": "1",
         "ai_enabled": "1",
         "sound_enabled": "1",
         "autostart": "0",
@@ -182,6 +184,7 @@ class DatabaseManager:
             gemini_api_key=unprotect_secret(rows.get("gemini_api_key", "")),
             gemini_model=rows.get("gemini_model", "gemini-3.5-flash-lite"),
             gemini_proxy=rows.get("gemini_proxy", ""),
+            gemini_use_dns_ai=rows.get("gemini_use_dns_ai", "1") == "1",
             ai_enabled=rows.get("ai_enabled", "1") == "1",
             sound_enabled=rows.get("sound_enabled", "1") == "1",
             autostart=rows.get("autostart", "0") == "1",
@@ -198,6 +201,7 @@ class DatabaseManager:
             "gemini_api_key": protect_secret(settings.gemini_api_key),
             "gemini_model": settings.gemini_model,
             "gemini_proxy": settings.gemini_proxy,
+            "gemini_use_dns_ai": "1" if settings.gemini_use_dns_ai else "0",
             "ai_enabled": "1" if settings.ai_enabled else "0",
             "sound_enabled": "1" if settings.sound_enabled else "0",
             "autostart": "1" if settings.autostart else "0",
