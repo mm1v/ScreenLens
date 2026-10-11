@@ -32,22 +32,30 @@ class SystemTrayApp:
         self._icon: Optional[pystray.Icon] = None
 
     def _create_menu(self) -> pystray.Menu:
+        def _cb(func):
+            def handler(*_args, **_kwargs):
+                try:
+                    func()
+                except Exception as exc:
+                    self._logger.exception("Ошибка при выполнении действия меню трея: %s", exc)
+            return handler
+
         items = [
-            pystray.MenuItem("⚡ Захватить область (Ctrl+Alt+Space)", lambda: self._on_capture(), default=True),
+            pystray.MenuItem("⚡ Захватить область (Ctrl+Alt+Space)", _cb(self._on_capture), default=True),
         ]
         if self._on_toggle_ai and self._is_ai_enabled:
             items.append(
                 pystray.MenuItem(
                     "🤖 Режим нейросети (Gemini ИИ)",
-                    lambda: self._on_toggle_ai(),
+                    _cb(self._on_toggle_ai),
                     checked=lambda item: self._is_ai_enabled(),
                 )
             )
         items.extend([
-            pystray.MenuItem("📜 История захватов...", lambda: self._on_history()),
-            pystray.MenuItem("⚙️ Настройки...", lambda: self._on_settings()),
+            pystray.MenuItem("📜 История захватов...", _cb(self._on_history)),
+            pystray.MenuItem("⚙️ Настройки...", _cb(self._on_settings)),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("❌ Выход", lambda: self.stop()),
+            pystray.MenuItem("❌ Выход", _cb(self.stop)),
         ])
         return pystray.Menu(*items)
 

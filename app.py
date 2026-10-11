@@ -5,6 +5,7 @@ import queue
 import sys
 import threading
 import time
+import tkinter as tk
 from pathlib import Path
 from typing import Optional
 
@@ -95,6 +96,9 @@ class ScreenLensApplication:
             self.logger.warning("Could not pre-init ScreenAreaSelector: %s", exc)
             self._selector = None
 
+        self._settings_win: Optional[tk.Toplevel] = None
+        self._history_win: Optional[tk.Toplevel] = None
+
         # Paths
         base_dir = Path(__file__).resolve().parent
         self.icon_path = base_dir / "assets" / "icon.png"
@@ -153,11 +157,25 @@ class ScreenLensApplication:
         # Main thread GUI event loop: processes capture requests, settings, history
         try:
             while self.is_running:
+                # 1. Drain pending tasks from queue
                 try:
-                    task = self._gui_queue.get(timeout=0.1)
-                    task()
+                    while True:
+                        task = self._gui_queue.get_nowait()
+                        task()
                 except queue.Empty:
                     pass
+
+                # 2. Process Tkinter GUI events (keeps settings and history windows repainting and responsive)
+                try:
+                    if self._selector and self._selector.root and self._selector.root.winfo_exists():
+                        self._selector.root.update_idletasks()
+                        self._selector.root.update()
+                except tk.TclError:
+                    pass
+                except Exception:
+                    pass
+
+                time.sleep(0.015)
         except KeyboardInterrupt:
             self.exit_app()
 
@@ -250,10 +268,17 @@ class ScreenLensApplication:
         self._gui_queue.put(self._run_settings_window)
 
     def _run_settings_window(self) -> None:
-        if self.is_busy:
-            return
-        self.is_busy = True
         try:
+            if self._settings_win:
+                try:
+                    if self._settings_win.winfo_exists():
+                        self._settings_win.deiconify()
+                        self._settings_win.lift()
+                        self._settings_win.focus_force()
+                        return
+                except Exception:
+                    self._settings_win = None
+
             def on_saved(new_settings: AppSettings):
                 self.settings = new_settings
                 self._start_hotkey_listener()
@@ -263,25 +288,32 @@ class ScreenLensApplication:
                 )
 
             master = self._selector.root if self._selector else None
-            win = SettingsWindow(db=self.db, on_save_callback=on_saved)
-            win.show(master=master)
-        finally:
-            self.is_busy = False
+            settings_obj = SettingsWindow(db=self.db, on_save_callback=on_saved)
+            self._settings_win = settings_obj.show(master=master)
+        except Exception as exc:
+            self.logger.exception("Ошибка при открытии окна настроек: %s", exc)
 
     def show_history_window(self) -> None:
         """Opens History GUI dispatched to the main thread."""
         self._gui_queue.put(self._run_history_window)
 
     def _run_history_window(self) -> None:
-        if self.is_busy:
-            return
-        self.is_busy = True
         try:
+            if self._history_win:
+                try:
+                    if self._history_win.winfo_exists():
+                        self._history_win.deiconify()
+                        self._history_win.lift()
+                        self._history_win.focus_force()
+                        return
+                except Exception:
+                    self._history_win = None
+
             master = self._selector.root if self._selector else None
-            win = HistoryWindow(db=self.db)
-            win.show(master=master)
-        finally:
-            self.is_busy = False
+            history_obj = HistoryWindow(db=self.db)
+            self._history_win = history_obj.show(master=master)
+        except Exception as exc:
+            self.logger.exception("Ошибка при открытии окна истории: %s", exc)
 
     def exit_app(self) -> None:
         """Clean shutdown."""

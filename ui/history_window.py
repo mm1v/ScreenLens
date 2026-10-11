@@ -28,6 +28,15 @@ class HistoryWindow:
         win.geometry("860x540")
         win.minsize(700, 450)
         win.configure(bg="#181c24")
+        win.attributes("-topmost", True)
+
+        def on_close():
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
 
         # Layout: PanedWindow with left list and right preview
         paned = tk.PanedWindow(win, orient=tk.HORIZONTAL, bg="#12151c", sashwidth=4)
@@ -178,13 +187,13 @@ class HistoryWindow:
         # Load items
         self._load_items(tree)
 
+        win.bind("<Escape>", lambda e: on_close())
+        win.deiconify()
+        win.lift()
         win.focus_force()
-        if isinstance(win, tk.Toplevel) and parent:
-            win.transient(parent)
-            win.grab_set()
-            parent.wait_window(win)
-        else:
+        if not parent:
             win.mainloop()
+        return win
 
     def _load_items(self, tree: ttk.Treeview) -> None:
         """Populates Treeview with records from DB."""

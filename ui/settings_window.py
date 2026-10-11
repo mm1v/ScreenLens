@@ -272,10 +272,10 @@ class SettingsWindow:
         # Bind universal Ctrl+V, Ctrl+C under Russian layout
         setup_universal_clipboard_shortcuts(win)
 
+        win.bind("<Escape>", lambda e: on_close())
+        win.deiconify()
+        win.lift()
         win.focus_force()
-        if isinstance(win, tk.Toplevel) and parent:
-            win.transient(parent)
-            win.grab_set()
-            parent.wait_window(win)
-        else:
+        if not parent:
             win.mainloop()
+        return win

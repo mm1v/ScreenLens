@@ -209,7 +209,7 @@ class TestGeminiClient(unittest.TestCase):
         self.assertEqual(client.proxy_url, "socks5://127.0.0.1:10808")
 
     def test_dns_ai_builder_and_parser(self):
-        from core.gemini import _build_dns_query, _parse_dns_response, verify_sni_proxy
+        from core.gemini import _build_dns_query, _parse_dns_response
         # Test query packing
         q = _build_dns_query("generativelanguage.googleapis.com")
         self.assertTrue(len(q) > 2)
@@ -217,9 +217,17 @@ class TestGeminiClient(unittest.TestCase):
         # Test empty / malformed packet
         self.assertEqual(_parse_dns_response(b""), [])
 
-        # Test verification of working SNI proxy
-        res = verify_sni_proxy("191.44.41.79", timeout=2.0)
-        self.assertTrue(res)
+        # Test valid RFC 1035 packet with 0xC0 compression pointer
+        mock_resp = bytes.fromhex(
+            "123481800001000100000000"
+            "1267656e657261746976656c616e67756167650a676f6f676c656170697303636f6d00"
+            "00010001"
+            "c00c"
+            "00010001000000780004"
+            "bf2c294f"
+        )
+        parsed = _parse_dns_response(mock_resp)
+        self.assertEqual(parsed, ["191.44.41.79"])
 
 
 class TestActions(unittest.TestCase):
