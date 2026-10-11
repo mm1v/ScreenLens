@@ -3,6 +3,7 @@ from tkinter import ttk
 import webbrowser
 from typing import Callable, Optional
 
+from core import __version__
 from core.clipboard import get_clipboard_text, setup_universal_clipboard_shortcuts
 from storage.db import AppSettings, DatabaseManager, set_windows_autostart
 
@@ -24,7 +25,7 @@ class SettingsWindow:
 
         parent = master or (tk._default_root if tk._default_root and getattr(tk._default_root, "winfo_exists", lambda: False)() else None)
         win = tk.Toplevel(parent) if parent else tk.Tk()
-        win.title("Настройки ScreenLens v0.0.1")
+        win.title(f"Настройки ScreenLens v{__version__}")
         win.geometry("490x580")
         win.minsize(460, 520)
         win.resizable(True, True)

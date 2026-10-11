@@ -15,6 +15,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+from core import __version__
 from core.actions import open_in_google_lens, translate_text
 from core.capture import ScreenAreaSelector
 from core.clipboard import ClipboardManager
@@ -40,7 +41,7 @@ def play_success_beep() -> None:
 def parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="ScreenLens 0.0.1 — умный захват области экрана, OCR, QR-сканер, перевод и Gemini Vision."
+        description=f"ScreenLens {__version__} — умный захват области экрана, OCR, QR-сканер, перевод и Gemini Vision."
     )
     parser.add_argument(
         "--daemon",
@@ -154,7 +155,7 @@ def run_pipeline(
         logger = setup_logger("screenlens", level=log_level)
 
     print("=" * 60, flush=True)
-    print("                ScreenLens 0.0.1 (Smart Pipeline)", flush=True)
+    print(f"                ScreenLens {__version__} (Smart Pipeline)", flush=True)
     print("=" * 60, flush=True)
 
     # 1. Determine capture area
@@ -306,7 +307,7 @@ def run_daemon_mode(
     logger = setup_logger("screenlens", level=log_level)
 
     print("=" * 60, flush=True)
-    print("           ScreenLens 0.0.1 — Фоновый режим (Daemon)", flush=True)
+    print(f"           ScreenLens {__version__} — Фоновый режим (Daemon)", flush=True)
     print("=" * 60, flush=True)
     print(f"\n[АКТИВЕН] Хоткей: {hotkey_combo}", flush=True)
     print("          Нажмите эту комбинацию в ЛЮБОЙ программе для захвата экрана.", flush=True)

@@ -5,6 +5,7 @@ from typing import Callable, Optional
 
 from PIL import Image
 import pystray
+from core import __version__
 
 
 class SystemTrayApp:
@@ -70,7 +71,7 @@ class SystemTrayApp:
         self._icon = pystray.Icon(
             name="ScreenLens",
             icon=image,
-            title="ScreenLens v0.0.1 — Google Lens для ПК",
+            title=f"ScreenLens v{__version__} — Google Lens для ПК",
             menu=self._create_menu(),
         )
 
