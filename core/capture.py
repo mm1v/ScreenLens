@@ -673,76 +673,82 @@ class ScreenAreaSelector:
 
             key_frame = tk.Frame(card_frame, bg="#222428")
 
-            def run_ai():
+            def on_ask_click(event: Optional[tk.Event] = None):
                 prompt = ent.get().strip()
+                if not prompt:
+                    prompt = "Объясни, что здесь изображено / как решить ошибку"
 
-                def set_loading():
-                    txt_res.delete("1.0", tk.END)
-                    txt_res.insert(tk.END, "Запрос к Gemini Vision...\n")
-                    controller.update_geometry()
+                txt_res.delete("1.0", tk.END)
+                txt_res.insert(tk.END, "Запрос к Gemini Vision...\n")
+                controller.update_geometry()
 
-                post_to_ui(set_loading)
+                def ai_worker():
+                    try:
+                        fresh_settings = db.get_settings() if db else (settings or None)
+                        g_key = (fresh_settings.gemini_api_key if fresh_settings else "").strip()
+                        g_model = fresh_settings.gemini_model if fresh_settings else "gemini-3.5-flash-lite"
+                        g_proxy = (fresh_settings.gemini_proxy if fresh_settings else "").strip()
+                        g_dns_ai = fresh_settings.gemini_use_dns_ai if fresh_settings else True
+                        client = GeminiVisionClient(
+                            api_key=g_key or None,
+                            model=g_model,
+                            proxy_url=g_proxy or None,
+                            use_dns_ai=g_dns_ai,
+                            logger=self._logger,
+                        )
+                        if not client.is_configured:
+                            def show_key_input():
+                                txt_res.delete("1.0", tk.END)
+                                txt_res.insert(tk.END, "Ключ Gemini не найден! Вставьте Google AI Studio ключ ниже:")
+                                for w in key_frame.winfo_children():
+                                    w.destroy()
+                                key_frame.pack(fill=tk.X, pady=4)
+                                k_ent = tk.Entry(key_frame, bg="#181a1d", fg="#ffffff", relief=tk.FLAT, highlightthickness=1, highlightbackground="#36393e", insertbackground="#ffffff")
+                                k_ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
 
-                try:
-                    fresh_settings = db.get_settings() if db else (settings or None)
-                    g_key = (fresh_settings.gemini_api_key if fresh_settings else "").strip()
-                    g_model = fresh_settings.gemini_model if fresh_settings else "gemini-3.5-flash-lite"
-                    g_proxy = (fresh_settings.gemini_proxy if fresh_settings else "").strip()
-                    g_dns_ai = fresh_settings.gemini_use_dns_ai if fresh_settings else True
-                    client = GeminiVisionClient(
-                        api_key=g_key or None,
-                        model=g_model,
-                        proxy_url=g_proxy or None,
-                        use_dns_ai=g_dns_ai,
-                        logger=self._logger,
-                    )
-                    if not client.is_configured:
-                        def show_key_input():
-                            txt_res.delete("1.0", tk.END)
-                            txt_res.insert(tk.END, "Ключ Gemini не найден! Вставьте Google AI Studio ключ ниже:")
-                            for w in key_frame.winfo_children():
-                                w.destroy()
-                            key_frame.pack(fill=tk.X, pady=4)
-                            k_ent = tk.Entry(key_frame, bg="#181a1d", fg="#ffffff", relief=tk.FLAT, highlightthickness=1, highlightbackground="#36393e", insertbackground="#ffffff")
-                            k_ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+                                def save_k(ev: Optional[tk.Event] = None):
+                                    val = k_ent.get().strip()
+                                    if val:
+                                        if db:
+                                            cur = db.get_settings()
+                                            cur.gemini_api_key = val
+                                            db.save_settings(cur)
+                                        key_frame.pack_forget()
+                                        on_ask_click()
 
-                            def save_k():
-                                val = k_ent.get().strip()
-                                if val:
-                                    if db:
-                                        cur = db.get_settings()
-                                        cur.gemini_api_key = val
-                                        db.save_settings(cur)
-                                    key_frame.pack_forget()
-                                    controller.update_geometry()
-                                    threading.Thread(target=run_ai, daemon=True).start()
+                                k_ent.bind("<Return>", lambda e: (save_k(), "break")[1])
+                                CapsuleButton(key_frame, text="Сохранить", style="primary", card_bg="#222428", command=save_k, height=28).pack(side=tk.RIGHT)
+                                controller.update_geometry()
 
-                            CapsuleButton(key_frame, text="Сохранить", style="primary", card_bg="#222428", command=save_k, height=28).pack(side=tk.RIGHT)
-                            controller.update_geometry()
-
-                        post_to_ui(show_key_input)
-                        return
-
-                    ans = client.analyze_image(shot.image_path, prompt=prompt)
-
-                    def set_ans():
-                        if is_destroyed.is_set():
+                            post_to_ui(show_key_input)
                             return
-                        txt_res.delete("1.0", tk.END)
-                        txt_res.insert(tk.END, ans)
-                        lines = len(ans.splitlines())
-                        txt_res.config(height=min(10, max(5, lines)))
-                        controller.update_geometry()
-                        if db:
-                            db.add_history(image_path=str(shot.image_path), ocr_text="", gemini_result=ans)
 
-                    post_to_ui(set_ans)
-                except Exception as exc:
-                    def show_err():
-                        txt_res.delete("1.0", tk.END)
-                        txt_res.insert(tk.END, f"Ошибка: {exc}")
-                        controller.update_geometry()
-                    post_to_ui(show_err)
+                        ans = client.analyze_image(shot.image_path, prompt=prompt)
+
+                        def set_ans():
+                            if is_destroyed.is_set():
+                                return
+                            txt_res.delete("1.0", tk.END)
+                            txt_res.insert(tk.END, ans)
+                            lines = len(ans.splitlines())
+                            txt_res.config(height=min(10, max(5, lines)))
+                            controller.update_geometry()
+                            if db:
+                                db.add_history(image_path=str(shot.image_path), ocr_text="", gemini_result=ans)
+
+                        post_to_ui(set_ans)
+                    except Exception as exc:
+                        self._logger.exception("Ошибка при обращении к Gemini Vision: %s", exc)
+                        def show_err():
+                            txt_res.delete("1.0", tk.END)
+                            txt_res.insert(tk.END, f"Ошибка: {exc}")
+                            controller.update_geometry()
+                        post_to_ui(show_err)
+
+                threading.Thread(target=ai_worker, daemon=True).start()
+                return "break"
+
+            ent.bind("<Return>", on_ask_click)
 
             def copy_ai():
                 val = txt_res.get("1.0", tk.END).strip()
@@ -755,7 +761,7 @@ class ScreenAreaSelector:
 
             btn_box = tk.Frame(card_frame, bg="#222428")
             btn_box.pack(fill=tk.X, pady=(2, 0))
-            CapsuleButton(btn_box, text="Спросить", style="primary", card_bg="#222428", command=lambda: threading.Thread(target=run_ai, daemon=True).start(), height=30).pack(side=tk.LEFT, padx=(0, 6))
+            CapsuleButton(btn_box, text="Спросить", style="primary", card_bg="#222428", command=on_ask_click, height=30).pack(side=tk.LEFT, padx=(0, 6))
             CapsuleButton(btn_box, text="Скопировать", style="secondary", card_bg="#222428", command=copy_ai, height=30).pack(side=tk.LEFT, padx=(0, 6))
             lbl_notify = tk.Label(btn_box, text="", font=("Segoe UI", 8), fg="#ffffff", bg="#222428")
             lbl_notify.pack(side=tk.LEFT, padx=6)

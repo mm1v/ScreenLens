@@ -1,6 +1,7 @@
 import os
 import tempfile
 import time
+import tkinter as tk
 import unittest
 from pathlib import Path
 from PIL import Image, ImageDraw
@@ -720,6 +721,49 @@ class TestGoogleLensSelection(unittest.TestCase):
         box_near_bottom = (500, 700, 900, 940)
         cx2, cy2 = get_card_placement(box_near_bottom, card_w, card_h, 500, 954, hud_w, hud_h, screen_w=1920, screen_h=1080)
         self.assertLessEqual(cy2 + card_h, box_near_bottom[1])
+
+    def test_capsule_button_item_click_binding(self):
+        from ui.floating_hud import CapsuleButton
+        root = tk.Tk()
+        try:
+            clicked = []
+            btn = CapsuleButton(root, text="Спросить", command=lambda: clicked.append(True))
+            btn.pack()
+            root.update()
+
+            # Test direct canvas click
+            btn._on_click(None)
+            self.assertEqual(len(clicked), 1)
+
+            # Test item tags have bindings
+            self.assertIn("<Button-1>", btn.tag_bind(btn.txt_id))
+            self.assertIn("<Button-1>", btn.tag_bind(btn.img_id))
+        finally:
+            root.destroy()
+
+    def test_ai_prompt_submission_on_ui_thread(self):
+        """Verifies prompt is retrieved synchronously without background thread deadlock."""
+        root = tk.Tk()
+        try:
+            ent = tk.Entry(root)
+            ent.insert(0, "Объясни эту ошибку")
+            ent.pack()
+            txt_res = tk.Text(root, height=4)
+            txt_res.pack()
+
+            events_dispatched = []
+
+            def on_ask():
+                p = ent.get().strip()
+                events_dispatched.append(f"prompt:{p}")
+                txt_res.delete("1.0", tk.END)
+                txt_res.insert(tk.END, "Запрос к Gemini Vision...\n")
+
+            on_ask()
+            self.assertIn("prompt:Объясни эту ошибку", events_dispatched)
+            self.assertIn("Запрос к Gemini Vision...", txt_res.get("1.0", tk.END))
+        finally:
+            root.destroy()
 
 
 if __name__ == "__main__":

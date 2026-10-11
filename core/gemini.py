@@ -129,10 +129,10 @@ def build_proxy_opener(
     return urllib.request.build_opener()
 
 
-DNS_AI_BOOTSTRAP_IPS = ("192.144.59.14", "186.246.49.127")
+DNS_AI_BOOTSTRAP_IPS = ("186.246.48.217", "192.144.59.14", "186.246.49.127")
 DNS_AI_HOST = "dns.dns-ai.ru"
 DNS_AI_PORT = 853
-DEFAULT_FALLBACK_SNI_IPS = ("191.44.41.79",)
+DEFAULT_FALLBACK_SNI_IPS = ("191.44.41.215", "191.44.41.79")
 TARGET_HOST = "generativelanguage.googleapis.com"
 
 _cached_dns_ai_ip: Optional[str] = None

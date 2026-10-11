@@ -505,13 +505,21 @@ class CapsuleButton(tk.Canvas):
         self.bind("<Leave>", self._on_leave)
         self.bind("<Button-1>", self._on_click)
 
-    def _on_enter(self, _event: tk.Event) -> None:
+        self.tag_bind(self.img_id, "<Enter>", self._on_enter)
+        self.tag_bind(self.img_id, "<Leave>", self._on_leave)
+        self.tag_bind(self.img_id, "<Button-1>", self._on_click)
+
+        self.tag_bind(self.txt_id, "<Enter>", self._on_enter)
+        self.tag_bind(self.txt_id, "<Leave>", self._on_leave)
+        self.tag_bind(self.txt_id, "<Button-1>", self._on_click)
+
+    def _on_enter(self, _event: Optional[tk.Event] = None) -> None:
         self.itemconfig(self.img_id, image=self._img_hover)
 
-    def _on_leave(self, _event: tk.Event) -> None:
+    def _on_leave(self, _event: Optional[tk.Event] = None) -> None:
         self.itemconfig(self.img_id, image=self._img_normal)
 
-    def _on_click(self, _event: tk.Event) -> None:
+    def _on_click(self, _event: Optional[tk.Event] = None) -> None:
         if self.command:
             self.command()
 
