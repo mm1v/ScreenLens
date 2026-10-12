@@ -296,16 +296,71 @@ class WindowsMediaOCREngine(BaseOCREngine):
         max_x = max(w.get("bounding_rect", {}).get("x", 0.0) + w.get("bounding_rect", {}).get("width", 0.0) for w in words)
         return x, y, max_x - x, max_y - y
 
+    def _restructure_lines_by_layout(self, res: Optional[dict]) -> dict:
+        """Groups fragmented or multi-column OCR bounding boxes into visual lines in natural reading order."""
+        if not isinstance(res, dict):
+            return res if res is not None else {}
+        lines = res.get("lines", [])
+        if not lines:
+            return res
+
+        items = []
+        for l in lines:
+            b = self._get_line_bbox(l)
+            items.append((b, l))
+
+        # Sort primarily by vertical coordinate y
+        items.sort(key=lambda item: item[0][1])
+
+        # Cluster boxes into visual horizontal rows where vertical overlap >= 45% of line height
+        rows = []
+        for b, l in items:
+            x, y, w, h = b
+            placed = False
+            for row in rows:
+                row_y_min = min(item[0][1] for item in row)
+                row_y_max = max(item[0][1] + item[0][3] for item in row)
+                overlap = min(y + h, row_y_max) - max(y, row_y_min)
+                min_h = min(h, max(item[0][3] for item in row))
+                if min_h > 0 and (overlap / min_h) >= 0.45:
+                    row.append((b, l))
+                    placed = True
+                    break
+            if not placed:
+                rows.append([(b, l)])
+
+        # Sort rows top-to-bottom by row vertical position
+        rows.sort(key=lambda row: min(item[0][1] for item in row))
+
+        new_lines = []
+        for row in rows:
+            # Sort fragments in row left-to-right by x
+            row.sort(key=lambda item: item[0][0])
+            merged_words = []
+            for _, l in row:
+                merged_words.extend(l.get("words", []))
+            merged_words.sort(key=lambda w: w.get("bounding_rect", {}).get("x", 0.0))
+            merged_text = " ".join(w.get("text", "") for w in merged_words if w.get("text", "")).strip()
+            new_lines.append({
+                "text": merged_text,
+                "words": merged_words,
+            })
+        return {"lines": new_lines, "text": "\n".join(l["text"] for l in new_lines)}
+
     def _extract_lines_text(self, res: Optional[dict]) -> str:
         if not isinstance(res, dict):
             return getattr(res, "text", "") or ""
-        lines = res.get("lines", [])
+        restructured = self._restructure_lines_by_layout(res)
+        lines = restructured.get("lines", [])
         if lines:
             return "\n".join(l.get("text", "") for l in lines if l.get("text"))
         return res.get("text", "")
 
     def _merge_dual_language_results(self, res_ru: Optional[dict], res_en: Optional[dict]) -> str:
         import re
+        res_ru = self._restructure_lines_by_layout(res_ru)
+        res_en = self._restructure_lines_by_layout(res_en)
+
         ru_lines = res_ru.get("lines", []) if isinstance(res_ru, dict) else []
         en_lines = res_en.get("lines", []) if isinstance(res_en, dict) else []
 
@@ -316,7 +371,7 @@ class WindowsMediaOCREngine(BaseOCREngine):
         if not en_lines:
             return self._extract_lines_text(res_ru)
 
-        output_lines: list[str] = []
+        output_items: list[tuple[float, str]] = []
         matched_en_indices: set[int] = set()
 
         for l_ru in ru_lines:
@@ -325,6 +380,8 @@ class WindowsMediaOCREngine(BaseOCREngine):
             best_en_idx: Optional[int] = None
             best_overlap = 0.0
             for idx, l_en in enumerate(en_lines):
+                if idx in matched_en_indices:
+                    continue
                 x_en, y_en, w_en, h_en = self._get_line_bbox(l_en)
                 overlap_y = max(0.0, min(y_ru + h_ru, y_en + h_en) - max(y_ru, y_en))
                 if overlap_y > best_overlap:
@@ -341,7 +398,7 @@ class WindowsMediaOCREngine(BaseOCREngine):
             # If line in RU has NO genuine Cyrillic letters (e.g. pure English sentence, code, URL):
             has_genuine_cyr = any(c in self.CYR_NON_HOMOGLYPHS for c in text_ru)
             if not has_genuine_cyr and text_en:
-                output_lines.append(text_en)
+                output_items.append((y_ru, text_en))
                 continue
 
             # If line has genuine Cyrillic letters, check word by word to preserve embedded Latin tokens
@@ -349,36 +406,58 @@ class WindowsMediaOCREngine(BaseOCREngine):
                 words_ru = l_ru.get("words", [])
                 words_en = matched_en.get("words", [])
                 fixed_words: list[str] = []
+                used_en_word_indices: set[int] = set()
+
                 for wr in words_ru:
                     w_text = wr.get("text", "")
                     if any(c in self.CYR_NON_HOMOGLYPHS for c in w_text):
                         fixed_words.append(w_text)
                         continue
 
-                    # Word has no genuine Cyrillic: find closest EN word by spatial coordinates
+                    # Pure numbers or punctuation without letters should not be replaced with Latin words
+                    if not re.search(r"[a-zA-Z\u0400-\u04ff]", w_text):
+                        fixed_words.append(w_text)
+                        continue
+
+                    # Word has no genuine Cyrillic: find closest unused EN word by spatial coordinates
                     bx = wr.get("bounding_rect", {})
-                    if words_en and "x" in bx:
-                        best_we = min(words_en, key=lambda we: abs(bx["x"] - we.get("bounding_rect", {}).get("x", 0.0)))
-                        dist_x = abs(bx["x"] - best_we.get("bounding_rect", {}).get("x", 0.0))
-                        we_text = best_we.get("text", "")
-                        if dist_x < 30.0 and re.search(r"[a-zA-Z]", we_text):
+                    w_x = bx.get("x", 0.0)
+                    best_we_idx = None
+                    best_dist = 99999.0
+
+                    for we_idx, we in enumerate(words_en):
+                        if we_idx in used_en_word_indices:
+                            continue
+                        we_x = we.get("bounding_rect", {}).get("x", 0.0)
+                        dist = abs(w_x - we_x)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_we_idx = we_idx
+
+                    max_allowed_dist = max(18.0, bx.get("width", 20.0) * 0.8)
+                    if best_we_idx is not None and best_dist <= max_allowed_dist:
+                        we_text = words_en[best_we_idx].get("text", "")
+                        if re.search(r"[a-zA-Z]", we_text):
                             fixed_words.append(we_text)
+                            used_en_word_indices.add(best_we_idx)
                         else:
                             fixed_words.append(w_text)
                     else:
                         fixed_words.append(w_text)
-                output_lines.append(" ".join(fixed_words))
+                output_items.append((y_ru, " ".join(fixed_words)))
             else:
-                output_lines.append(text_ru)
+                output_items.append((y_ru, text_ru))
 
-        # Append any un-matched EN lines (e.g. text only detected by EN engine)
+        # Include un-matched EN lines at their proper vertical position
         for idx, l_en in enumerate(en_lines):
             if idx not in matched_en_indices:
                 t = l_en.get("text", "").strip()
                 if t:
-                    output_lines.append(t)
+                    _, y_en, _, _ = self._get_line_bbox(l_en)
+                    output_items.append((y_en, t))
 
-        return "\n".join(output_lines)
+        output_items.sort(key=lambda item: item[0])
+        return "\n".join(item[1] for item in output_items)
 
     def recognize(self, image_path: Path) -> OCRResult:
         """Performs OCR recognition using native Windows Media OCR API."""

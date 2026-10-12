@@ -131,6 +131,122 @@ class TestOCREngine(unittest.TestCase):
         self.assertIn("входа", merged)
         self.assertNotIn("OUJV16Ka", merged)
 
+    def test_minimal_separated_boxes_no_duplicate(self):
+        """Verifies that when OCR splits a line into hash and message columns, message is not duplicated."""
+        from core.ocr import WindowsMediaOCREngine
+        engine = WindowsMediaOCREngine()
+
+        res_ru = {
+            "lines": [
+                {"text": "2b1785e", "words": [{"text": "2b1785e", "bounding_rect": {"x": 20.0, "y": 50.0, "width": 40.0, "height": 10.0}}]},
+                {"text": "сообщение коммита", "words": [
+                    {"text": "сообщение", "bounding_rect": {"x": 100.0, "y": 50.0, "width": 80.0, "height": 10.0}},
+                    {"text": "коммита", "bounding_rect": {"x": 190.0, "y": 50.0, "width": 70.0, "height": 10.0}},
+                ]},
+            ]
+        }
+        res_en = {
+            "lines": [
+                {"text": "2b1785e", "words": [{"text": "2b1785e", "bounding_rect": {"x": 20.0, "y": 50.0, "width": 40.0, "height": 10.0}}]},
+                {"text": "commit message", "words": [
+                    {"text": "commit", "bounding_rect": {"x": 100.0, "y": 50.0, "width": 50.0, "height": 10.0}},
+                    {"text": "message", "bounding_rect": {"x": 160.0, "y": 50.0, "width": 60.0, "height": 10.0}},
+                ]},
+            ]
+        }
+
+        merged = engine._merge_dual_language_results(res_ru, res_en)
+        lines = [l.strip() for l in merged.splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("2b1785e"))
+        self.assertIn("сообщение", lines[0])
+
+    def test_commits_list_regression_4_5_and_8_items(self):
+        """Verifies that git commit lists with separated hash and message columns maintain correct line-by-line pairing."""
+        from core.ocr import WindowsMediaOCREngine
+        engine = WindowsMediaOCREngine()
+
+        for count in (4, 5, 8):
+            ru_hash_boxes = []
+            ru_msg_boxes = []
+            en_hash_boxes = []
+            en_msg_boxes = []
+
+            for i in range(count):
+                y = 20.0 + i * 30.0
+                h_val = f"hash{i:03d}"
+                m_ru = f"сообщение номер {i}"
+                m_en = f"commit message {i}"
+
+                ru_hash_boxes.append({
+                    "text": h_val,
+                    "words": [{"text": h_val, "bounding_rect": {"x": 10.0, "y": y, "width": 40.0, "height": 12.0}}],
+                })
+                ru_msg_boxes.append({
+                    "text": m_ru,
+                    "words": [{"text": m_ru, "bounding_rect": {"x": 80.0, "y": y, "width": 150.0, "height": 12.0}}],
+                })
+                en_hash_boxes.append({
+                    "text": h_val,
+                    "words": [{"text": h_val, "bounding_rect": {"x": 10.0, "y": y, "width": 40.0, "height": 12.0}}],
+                })
+                en_msg_boxes.append({
+                    "text": m_en,
+                    "words": [{"text": m_en, "bounding_rect": {"x": 80.0, "y": y, "width": 150.0, "height": 12.0}}],
+                })
+
+            # Simulate Windows Media OCR multi-column return: all hashes first, then all messages
+            res_ru = {"lines": ru_hash_boxes + ru_msg_boxes}
+            res_en = {"lines": en_hash_boxes + en_msg_boxes}
+
+            merged = engine._merge_dual_language_results(res_ru, res_en)
+            lines = [l.strip() for l in merged.splitlines() if l.strip()]
+
+            self.assertEqual(len(lines), count, f"Expected {count} lines, got {len(lines)}: {lines}")
+            for i, line in enumerate(lines):
+                expected_hash = f"hash{i:03d}"
+                self.assertTrue(line.startswith(expected_hash), f"Line {i} does not start with {expected_hash}: {line}")
+                self.assertIn(f"номер {i}", line, f"Line {i} missing message {i}: {line}")
+
+    def test_incomplete_ocr_pass_preserves_vertical_order(self):
+        """Verifies that if one language pass misses a middle line, it remains at its proper vertical position."""
+        from core.ocr import WindowsMediaOCREngine
+        engine = WindowsMediaOCREngine()
+
+        # RU only detects line 1 and line 3
+        res_ru = {
+            "lines": [
+                {"text": "первая строка", "words": [{"text": "первая", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 60.0, "height": 12.0}}]},
+                {"text": "третья строка", "words": [{"text": "третья", "bounding_rect": {"x": 10.0, "y": 70.0, "width": 60.0, "height": 12.0}}]},
+            ]
+        }
+        # EN detects all three lines (including line 2 at y=40)
+        res_en = {
+            "lines": [
+                {"text": "first line", "words": [
+                    {"text": "first", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 30.0, "height": 12.0}},
+                    {"text": "line", "bounding_rect": {"x": 45.0, "y": 10.0, "width": 25.0, "height": 12.0}},
+                ]},
+                {"text": "second line en", "words": [
+                    {"text": "second", "bounding_rect": {"x": 10.0, "y": 40.0, "width": 30.0, "height": 12.0}},
+                    {"text": "line", "bounding_rect": {"x": 45.0, "y": 40.0, "width": 25.0, "height": 12.0}},
+                    {"text": "en", "bounding_rect": {"x": 75.0, "y": 40.0, "width": 15.0, "height": 12.0}},
+                ]},
+                {"text": "third line", "words": [
+                    {"text": "third", "bounding_rect": {"x": 10.0, "y": 70.0, "width": 30.0, "height": 12.0}},
+                    {"text": "line", "bounding_rect": {"x": 45.0, "y": 70.0, "width": 25.0, "height": 12.0}},
+                ]},
+            ]
+        }
+
+        merged = engine._merge_dual_language_results(res_ru, res_en)
+        lines = [l.strip() for l in merged.splitlines() if l.strip()]
+
+        self.assertEqual(len(lines), 3)
+        self.assertIn("первая", lines[0])
+        self.assertIn("second line en", lines[1])
+        self.assertIn("третья", lines[2])
+
 
 
 class TestClipboard(unittest.TestCase):
