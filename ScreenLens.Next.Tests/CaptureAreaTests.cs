@@ -22,6 +22,8 @@ public class CaptureAreaTests
 
     [Theory]
     [InlineData(0, 0, 1, 1, false)]
+    [InlineData(0, 0, 0, 4, false)]
+    [InlineData(100, 200, 4, 0, false)]
     [InlineData(10, 10, 2, 2, false)]
     [InlineData(10, 10, 3, 3, true)]
     [InlineData(50, 50, 200, 150, true)]

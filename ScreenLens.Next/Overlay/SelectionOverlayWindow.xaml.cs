@@ -345,9 +345,22 @@ public partial class SelectionOverlayWindow : Window
 
     #region Visual Styling (Google Lens Viewfinder, 8 Handles, Cutout, HUD)
 
+    private static StreamGeometry CreateCornerGeometry(System.Windows.Point p1, System.Windows.Point corner, System.Windows.Point p2)
+    {
+        var geom = new StreamGeometry();
+        using (var ctx = geom.Open())
+        {
+            ctx.BeginFigure(p1, isFilled: false, isClosed: false);
+            ctx.LineTo(corner, isStroked: true, isSmoothJoin: true);
+            ctx.LineTo(p2, isStroked: true, isSmoothJoin: true);
+        }
+        geom.Freeze();
+        return geom;
+    }
+
     private void UpdateSelectionVisuals(bool showHandles)
     {
-        if (_selRect.IsEmpty || _selRect.Width <= 0 || _selRect.Height <= 0)
+        if (_selRect.IsEmpty || _selRect.Width <= 1 || _selRect.Height <= 1)
         {
             CutoutContainer.Visibility = Visibility.Collapsed;
             SelectionFrameCanvas.Visibility = Visibility.Collapsed;
@@ -355,50 +368,63 @@ public partial class SelectionOverlayWindow : Window
             return;
         }
 
+        double w = Math.Max(1, _selRect.Width);
+        double h = Math.Max(1, _selRect.Height);
+
         // 1. Cutout Container (clips bright desktop to selection)
         CutoutContainer.Visibility = Visibility.Visible;
         Canvas.SetLeft(CutoutContainer, _selRect.X);
         Canvas.SetTop(CutoutContainer, _selRect.Y);
-        CutoutContainer.Width = _selRect.Width;
-        CutoutContainer.Height = _selRect.Height;
+        CutoutContainer.Width = w;
+        CutoutContainer.Height = h;
         BrightCutoutImage.Margin = new Thickness(-_selRect.X, -_selRect.Y, 0, 0);
 
         // 2. Selection Frame
         SelectionFrameCanvas.Visibility = Visibility.Visible;
         Canvas.SetLeft(SelectionShadowRect, _selRect.X - 1);
         Canvas.SetTop(SelectionShadowRect, _selRect.Y - 1);
-        SelectionShadowRect.Width = _selRect.Width + 2;
-        SelectionShadowRect.Height = _selRect.Height + 2;
+        SelectionShadowRect.Width = w + 2;
+        SelectionShadowRect.Height = h + 2;
 
         Canvas.SetLeft(SelectionRect, _selRect.X);
         Canvas.SetTop(SelectionRect, _selRect.Y);
-        SelectionRect.Width = _selRect.Width;
-        SelectionRect.Height = _selRect.Height;
+        SelectionRect.Width = w;
+        SelectionRect.Height = h;
 
         // 3. Google Lens Corner Brackets (3.5px round white)
-        double c = Math.Min(22, Math.Min(_selRect.Width, _selRect.Height) / 4.0);
-        double x = _selRect.X;
-        double y = _selRect.Y;
-        double r = _selRect.Right;
-        double b = _selRect.Bottom;
+        double c = Math.Min(22, Math.Min(w, h) / 4.0);
+        if (c >= 2.0)
+        {
+            double x = _selRect.X;
+            double y = _selRect.Y;
+            double r = _selRect.Right;
+            double b = _selRect.Bottom;
 
-        CornerNw.Data = Geometry.Parse($"M {x},{y + c} L {x},{y} L {x + c},{y}");
-        CornerNe.Data = Geometry.Parse($"M {r - c},{y} L {r},{y} L {r},{y + c}");
-        CornerSe.Data = Geometry.Parse($"M {r},{b - c} L {r},{b} L {r - c},{b}");
-        CornerSw.Data = Geometry.Parse($"M {x + c},{b} L {x},{b} L {x},{b - c}");
+            CornerNw.Data = CreateCornerGeometry(new System.Windows.Point(x, y + c), new System.Windows.Point(x, y), new System.Windows.Point(x + c, y));
+            CornerNe.Data = CreateCornerGeometry(new System.Windows.Point(r - c, y), new System.Windows.Point(r, y), new System.Windows.Point(r, y + c));
+            CornerSe.Data = CreateCornerGeometry(new System.Windows.Point(r, b - c), new System.Windows.Point(r, b), new System.Windows.Point(r - c, b));
+            CornerSw.Data = CreateCornerGeometry(new System.Windows.Point(x + c, b), new System.Windows.Point(x, b), new System.Windows.Point(x, b - c));
+        }
+        else
+        {
+            CornerNw.Data = null;
+            CornerNe.Data = null;
+            CornerSe.Data = null;
+            CornerSw.Data = null;
+        }
 
         // 4. 8 Circular Handles
-        if (showHandles)
+        if (showHandles && w >= 15 && h >= 15)
         {
             HandlesCanvas.Visibility = Visibility.Visible;
-            PositionHandle(HandleNw, x, y);
-            PositionHandle(HandleN, x + _selRect.Width / 2.0, y);
-            PositionHandle(HandleNe, r, y);
-            PositionHandle(HandleE, r, y + _selRect.Height / 2.0);
-            PositionHandle(HandleSe, r, b);
-            PositionHandle(HandleS, x + _selRect.Width / 2.0, b);
-            PositionHandle(HandleSw, x, b);
-            PositionHandle(HandleW, x, y + _selRect.Height / 2.0);
+            PositionHandle(HandleNw, _selRect.X, _selRect.Y);
+            PositionHandle(HandleN, _selRect.X + w / 2.0, _selRect.Y);
+            PositionHandle(HandleNe, _selRect.Right, _selRect.Y);
+            PositionHandle(HandleE, _selRect.Right, _selRect.Y + h / 2.0);
+            PositionHandle(HandleSe, _selRect.Right, _selRect.Bottom);
+            PositionHandle(HandleS, _selRect.X + w / 2.0, _selRect.Bottom);
+            PositionHandle(HandleSw, _selRect.X, _selRect.Bottom);
+            PositionHandle(HandleW, _selRect.X, _selRect.Y + h / 2.0);
         }
         else
         {
