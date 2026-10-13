@@ -14,6 +14,7 @@ from core.models import CaptureArea, ScreenshotResult
 from core.actions import open_in_google_lens, translate_text
 from core.gemini import GeminiVisionClient
 from core.ocr import create_ocr_engine
+from ui.text_selection_layer import SelectableTextLayer
 from ui.floating_hud import (
     CapsuleButton,
     GoogleLensHUD,
@@ -331,12 +332,76 @@ class ScreenAreaSelector:
         active_controller: list[Optional[RoundedCardController]] = [None]
         hud_window_id: Optional[int] = None
 
+        cached_ocr_result: list[Optional[OCRResult]] = [None]
+        cached_ocr_box: list[Optional[tuple[int, int, int, int]]] = [None]
+        cached_tr_result: list[Optional[str]] = [None]
+        cached_tr_lang: list[Optional[str]] = [None]
+        cached_tr_box: list[Optional[tuple[int, int, int, int]]] = [None]
+        shot_ref: list[Optional[ScreenshotResult]] = [None]
+
+        def show_copied_toast(msg: str = "✓ Скопировано в буфер!"):
+            tx = box[0] + (box[2] - box[0]) // 2 if box else vw // 2
+            ty = box[1] + (box[3] - box[1]) // 2 if box else vh // 2
+            toast_photo, tw, th = render_pill_badge(msg, h=26)
+            canvas._toast_photo = toast_photo
+            canvas.delete("toast")
+            canvas.create_image(tx - tw // 2, ty - th // 2, image=toast_photo, anchor=tk.NW, tags="toast")
+            canvas.create_text(tx, ty, text=msg, fill="#ffffff", font=("Segoe UI", 9, "bold"), tags="toast")
+            root.after(1200, lambda: canvas.delete("toast") if not is_destroyed.is_set() else None)
+
+        def show_ocr_loading_indicator(loading_text: str = "Распознавание текста..."):
+            canvas.delete("ocr_loading")
+            if not box:
+                return
+            cx = (box[0] + box[2]) // 2
+            cy = (box[1] + box[3]) // 2
+            photo, lw, lh = render_pill_badge(loading_text, h=30)
+            canvas._ocr_loading_photo = photo
+            canvas.create_image(cx - lw // 2, cy - lh // 2, image=photo, anchor=tk.NW, tags="ocr_loading")
+            canvas.create_text(cx, cy, text=loading_text, fill="#ffffff", font=("Segoe UI", 9, "bold"), tags="ocr_loading")
+
+        def hide_ocr_loading_indicator():
+            canvas.delete("ocr_loading")
+
+        def handle_copy_text(val: str):
+            if not val:
+                return
+            if clipboard:
+                clipboard.copy(val)
+            if sound_fn and settings and settings.sound_enabled:
+                sound_fn(True)
+            if db and shot_ref[0]:
+                if current_state == "translate_select":
+                    db.add_history(image_path=str(shot_ref[0].image_path), ocr_text="", translated_text=val)
+                else:
+                    db.add_history(image_path=str(shot_ref[0].image_path), ocr_text=val)
+            show_copied_toast("✓ Текст скопирован!")
+
+        text_layer = SelectableTextLayer(
+            canvas=canvas,
+            root=root,
+            on_copy_callback=handle_copy_text,
+            logger=self._logger,
+        )
+
         def clear_active_card():
+            if text_layer.is_active:
+                text_layer.hide()
             canvas.delete("active_card")
+            canvas.delete("ocr_loading")
             active_card_win[0] = None
             if active_controller[0]:
                 active_controller[0].destroy()
                 active_controller[0] = None
+
+        def invalidate_ocr_cache():
+            cached_ocr_result[0] = None
+            cached_ocr_box[0] = None
+            cached_tr_result[0] = None
+            cached_tr_lang[0] = None
+            cached_tr_box[0] = None
+            if text_layer.is_active:
+                text_layer.hide()
 
         def update_cutout_preview(bx1: int, by1: int, bx2: int, by2: int):
             nonlocal cutout_img_id
@@ -399,7 +464,6 @@ class ScreenAreaSelector:
                 try:
                     cropped.save(cache_p, format="PNG")
                     cropped.save(cache_j, format="JPEG", quality=95)
-                    copy_image_to_clipboard(cropped)
                 except Exception:
                     pass
                 shot = ScreenshotResult(image_path=t_path, area=area, width=cropped.width, height=cropped.height)
@@ -412,69 +476,37 @@ class ScreenAreaSelector:
 
         # Action callbacks for HUD
         def action_text():
+            nonlocal current_state
+            # Toggle off if already in text selection mode
+            if current_state == "text_select":
+                text_layer.hide()
+                lens_hud.reset_active_mode()
+                current_state = "adjusting"
+                return
+
             clear_active_card()
             lens_hud.set_active_mode("text")
+
+            if box is None:
+                return
+
+            # Re-use already cached OCR result if box unchanged
+            if cached_ocr_box[0] == box and cached_ocr_result[0] is not None:
+                crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
+                text_layer.load_from_ocr(
+                    cached_ocr_result[0],
+                    box,
+                    crop_img=crop_pil,
+                    cutout_item_id=cutout_img_id,
+                    original_crop_photo=getattr(canvas, "_cutout_photo", None),
+                )
+                text_layer.show()
+                current_state = "text_select"
+                return
+
             t_path, shot = crop_and_save_current_selection()
-
-            hw, hh = lens_hud.get_dimensions()
-            controller = RoundedCardController(
-                canvas=canvas,
-                box=box if box else (0, 0, 100, 100),
-                hud_pos=(lens_hud.x, lens_hud.y, hw, hh),
-                screen_size=(vw, vh),
-                min_w=480,
-                pad_x=18,
-                pad_y=14,
-            )
-            active_controller[0] = controller
-            card_frame = controller.content_frame
-
-            title_f = tk.Frame(card_frame, bg="#222428")
-            title_f.pack(fill=tk.X)
-            tk.Label(title_f, text="Распознанный текст", font=("Segoe UI", 10, "bold"), fg="#ffffff", bg="#222428").pack(side=tk.LEFT)
-            cnt_lbl = tk.Label(title_f, text="", font=("Segoe UI", 8), fg="#9e9e9e", bg="#222428")
-            cnt_lbl.pack(side=tk.LEFT, padx=6)
-
-            txt = tk.Text(
-                card_frame,
-                wrap=tk.WORD,
-                height=5,
-                width=50,
-                bg="#181a1d",
-                fg="#ffffff",
-                insertbackground="#ffffff",
-                selectbackground="#404349",
-                selectforeground="#ffffff",
-                relief=tk.FLAT,
-                font=("Segoe UI", 9),
-                padx=10,
-                pady=8,
-                highlightthickness=1,
-                highlightbackground="#36393e",
-            )
-            txt.pack(fill=tk.X, expand=False, pady=8)
-            txt.insert(tk.END, "Распознавание текста (OCR)...\n")
-
-            btn_box = tk.Frame(card_frame, bg="#222428")
-            btn_box.pack(fill=tk.X, pady=(4, 0))
-
-            def copy_all():
-                val = txt.get("1.0", tk.END).strip()
-                if clipboard:
-                    clipboard.copy(val)
-                if sound_fn and settings and settings.sound_enabled:
-                    sound_fn(True)
-                if db:
-                    db.add_history(image_path=str(shot.image_path), ocr_text=val)
-                lbl_notify.config(text="✓ Скопировано!", fg="#ffffff")
-                root.after(1500, lambda: lbl_notify.config(text="") if not is_destroyed.is_set() else None)
-
-            CapsuleButton(btn_box, text="Скопировать", style="primary", card_bg="#222428", command=copy_all, height=30).pack(side=tk.LEFT, padx=(0, 6))
-            lbl_notify = tk.Label(btn_box, text="", font=("Segoe UI", 8), fg="#ffffff", bg="#222428")
-            lbl_notify.pack(side=tk.LEFT, padx=6)
-            CapsuleButton(btn_box, text="Закрыть", style="danger", card_bg="#222428", command=clear_active_card, height=30).pack(side=tk.RIGHT)
-
-            controller.update_geometry()
+            shot_ref[0] = shot
+            show_ocr_loading_indicator()
 
             def ocr_worker():
                 try:
@@ -482,128 +514,138 @@ class ScreenAreaSelector:
                     ocr_eng = settings.ocr_engine if settings else "auto"
                     engine = create_ocr_engine(engine_name=ocr_eng, language=ocr_lang, logger=self._logger)
                     res = engine.recognize(shot.image_path)
-                    val = res.cleaned_text
                 except Exception as exc:
-                    val = f"[Ошибка OCR: {exc}]"
+                    self._logger.error("Windows Media OCR recognition error: %s", exc)
+                    res = OCRResult(
+                        raw_text=f"[Ошибка OCR: {exc}]",
+                        cleaned_text="",
+                        image_path=shot.image_path,
+                    )
 
-                def update_ocr():
+                def on_ocr_done():
                     if is_destroyed.is_set():
                         return
-                    txt.delete("1.0", tk.END)
-                    if val:
-                        txt.insert(tk.END, val)
-                        cnt_lbl.config(text=f"({len(val)} симв.)")
-                        lines = len(val.splitlines())
-                        txt.config(height=min(8, max(4, lines)))
-                        if clipboard and settings and settings.auto_copy:
-                            clipboard.copy(val)
-                        if db:
-                            db.add_history(image_path=str(shot.image_path), ocr_text=val)
-                    else:
-                        txt.insert(tk.END, "[Текст на снимке не обнаружен]")
-                        cnt_lbl.config(text="(0 симв.)")
-                    controller.update_geometry()
+                    hide_ocr_loading_indicator()
+                    cached_ocr_result[0] = res
+                    cached_ocr_box[0] = box
+                    if box is not None:
+                        crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
+                        text_layer.load_from_ocr(
+                            res,
+                            box,
+                            crop_img=crop_pil,
+                            cutout_item_id=cutout_img_id,
+                            original_crop_photo=getattr(canvas, "_cutout_photo", None),
+                        )
+                        text_layer.show()
+                        nonlocal current_state
+                        current_state = "text_select"
 
-                post_to_ui(update_ocr)
+                        if clipboard and settings and getattr(settings, "auto_copy", False) and res.cleaned_text:
+                            clipboard.copy(res.cleaned_text)
+                        if db and res.cleaned_text:
+                            db.add_history(image_path=str(shot.image_path), ocr_text=res.cleaned_text)
+
+                post_to_ui(on_ocr_done)
 
             threading.Thread(target=ocr_worker, daemon=True).start()
 
         def action_translate():
+            nonlocal current_state
+            # Toggle off if already in translate selection mode
+            if current_state == "translate_select":
+                text_layer.hide()
+                lens_hud.reset_active_mode()
+                current_state = "adjusting"
+                return
+
             clear_active_card()
             lens_hud.set_active_mode("translate")
+
+            if box is None:
+                return
+
+            target = settings.translate_lang if settings else "ru"
+
+            # Re-use already cached translation if box and target language unchanged
+            if (
+                cached_tr_box[0] == box
+                and cached_tr_lang[0] == target
+                and cached_tr_result[0] is not None
+                and cached_ocr_result[0] is not None
+            ):
+                crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
+                text_layer.load_translation(
+                    cached_ocr_result[0],
+                    cached_tr_result[0],
+                    box,
+                    crop_img=crop_pil,
+                    cutout_item_id=cutout_img_id,
+                    original_crop_photo=getattr(canvas, "_cutout_photo", None),
+                )
+                text_layer.show()
+                current_state = "translate_select"
+                return
+
             t_path, shot = crop_and_save_current_selection()
-
-            hw, hh = lens_hud.get_dimensions()
-            controller = RoundedCardController(
-                canvas=canvas,
-                box=box if box else (0, 0, 100, 100),
-                hud_pos=(lens_hud.x, lens_hud.y, hw, hh),
-                screen_size=(vw, vh),
-                min_w=480,
-                pad_x=18,
-                pad_y=14,
-            )
-            active_controller[0] = controller
-            card_frame = controller.content_frame
-
-            title_f = tk.Frame(card_frame, bg="#222428")
-            title_f.pack(fill=tk.X)
-            tk.Label(title_f, text="Перевод Google Lens", font=("Segoe UI", 10, "bold"), fg="#ffffff", bg="#222428").pack(side=tk.LEFT)
-
-            txt = tk.Text(
-                card_frame,
-                wrap=tk.WORD,
-                height=5,
-                width=50,
-                bg="#181a1d",
-                fg="#ffffff",
-                insertbackground="#ffffff",
-                selectbackground="#404349",
-                selectforeground="#ffffff",
-                relief=tk.FLAT,
-                font=("Segoe UI", 9),
-                padx=10,
-                pady=8,
-                highlightthickness=1,
-                highlightbackground="#36393e",
-            )
-            txt.pack(fill=tk.X, expand=False, pady=8)
-            txt.insert(tk.END, "Выполняется перевод текста в фоне...\n")
-
-            btn_box = tk.Frame(card_frame, bg="#222428")
-            btn_box.pack(fill=tk.X, pady=(4, 0))
-
-            def copy_tr():
-                val = txt.get("1.0", tk.END).strip()
-                if clipboard:
-                    clipboard.copy(val)
-                if sound_fn and settings and settings.sound_enabled:
-                    sound_fn(True)
-                lbl_notify.config(text="✓ Скопировано!", fg="#ffffff")
-                root.after(1500, lambda: lbl_notify.config(text="") if not is_destroyed.is_set() else None)
-
-            CapsuleButton(
-                btn_box,
-                text="Скопировать",
-                style="primary",
-                card_bg="#222428",
-                command=copy_tr,
-                height=30,
-            ).pack(side=tk.LEFT, padx=(0, 6))
-            lbl_notify = tk.Label(btn_box, text="", font=("Segoe UI", 8), fg="#ffffff", bg="#222428")
-            lbl_notify.pack(side=tk.LEFT, padx=6)
-            CapsuleButton(btn_box, text="Закрыть", style="danger", card_bg="#222428", command=clear_active_card, height=30).pack(side=tk.RIGHT)
-
-            controller.update_geometry()
+            shot_ref[0] = shot
+            show_ocr_loading_indicator("Перевод текста...")
 
             def tr_worker():
                 try:
-                    ocr_lang = settings.ocr_lang if settings else "rus+eng"
-                    ocr_eng = settings.ocr_engine if settings else "auto"
-                    target = settings.translate_lang if settings else "ru"
-                    engine = create_ocr_engine(engine_name=ocr_eng, language=ocr_lang, logger=self._logger)
-                    ocr_res = engine.recognize(shot.image_path)
+                    ocr_res = None
+                    if cached_ocr_box[0] == box and cached_ocr_result[0] is not None:
+                        ocr_res = cached_ocr_result[0]
+                    else:
+                        ocr_lang = settings.ocr_lang if settings else "rus+eng"
+                        ocr_eng = settings.ocr_engine if settings else "auto"
+                        engine = create_ocr_engine(engine_name=ocr_eng, language=ocr_lang, logger=self._logger)
+                        ocr_res = engine.recognize(shot.image_path)
+                        cached_ocr_result[0] = ocr_res
+                        cached_ocr_box[0] = box
+
                     raw_text = ocr_res.cleaned_text
                     if raw_text:
                         tr_text = translate_text(raw_text, target_lang=target, logger=self._logger)
                     else:
                         tr_text = "[Нет текста для перевода]"
                 except Exception as exc:
-                    raw_text = ""
-                    tr_text = f"[Ошибка: {exc}]"
+                    self._logger.error("Ошибка распознавания или перевода: %s", exc)
+                    if ocr_res is None:
+                        ocr_res = OCRResult(
+                            raw_text=f"[Ошибка: {exc}]",
+                            cleaned_text="",
+                            image_path=shot.image_path,
+                        )
+                    tr_text = f"[Ошибка перевода: {exc}]"
 
-                def update_tr():
+                def on_tr_done():
                     if is_destroyed.is_set():
                         return
-                    txt.delete("1.0", tk.END)
-                    txt.insert(tk.END, tr_text)
-                    lines = len(tr_text.splitlines())
-                    txt.config(height=min(8, max(4, lines)))
-                    controller.update_geometry()
-                    if db and raw_text:
-                        db.add_history(image_path=str(shot.image_path), ocr_text=raw_text, translated_text=tr_text)
+                    hide_ocr_loading_indicator()
+                    cached_tr_result[0] = tr_text
+                    cached_tr_lang[0] = target
+                    cached_tr_box[0] = box
+                    if box is not None:
+                        crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
+                        text_layer.load_translation(
+                            ocr_res,
+                            tr_text,
+                            box,
+                            crop_img=crop_pil,
+                            cutout_item_id=cutout_img_id,
+                            original_crop_photo=getattr(canvas, "_cutout_photo", None),
+                        )
+                        text_layer.show()
+                        nonlocal current_state
+                        current_state = "translate_select"
 
-                post_to_ui(update_tr)
+                        if clipboard and settings and getattr(settings, "auto_copy", False) and tr_text:
+                            clipboard.copy(tr_text)
+                        if db and raw_text:
+                            db.add_history(image_path=str(shot.image_path), ocr_text=raw_text, translated_text=tr_text)
+
+                post_to_ui(on_tr_done)
 
             threading.Thread(target=tr_worker, daemon=True).start()
 
@@ -777,19 +819,23 @@ class ScreenAreaSelector:
             controller.update_geometry()
 
         def action_copy():
+            if current_state in ("text_select", "translate_select") and text_layer.is_active:
+                text_layer.execute_copy()
+                return
+
             t_path, shot = crop_and_save_current_selection()
+            bx1, by1, bx2, by2 = box if box else (0, 0, 100, 100)
+            if full_desktop_img:
+                cropped = full_desktop_img.crop((bx1, by1, bx2, by2)).convert("RGB")
+                copy_image_to_clipboard(cropped)
+            elif shot and shot.image_path:
+                copy_image_to_clipboard(shot.image_path)
+
             if sound_fn and settings and settings.sound_enabled:
                 sound_fn(True)
 
             # Show quick confirmation stadium capsule toast
-            toast_text = "✓ Скопировано в буфер!"
-            tx = box[0] + (box[2] - box[0]) // 2 if box else vw // 2
-            ty = box[1] + (box[3] - box[1]) // 2 if box else vh // 2
-            toast_photo, tw, th = render_pill_badge(toast_text, h=26)
-            canvas._toast_photo = toast_photo
-            canvas.create_image(tx - tw // 2, ty - th // 2, image=toast_photo, anchor=tk.NW, tags="toast")
-            canvas.create_text(tx, ty, text=toast_text, fill="#ffffff", font=("Segoe UI", 9, "bold"), tags="toast")
-            root.after(1100, lambda: (canvas.delete("toast")))
+            show_copied_toast("✓ Изображение скопировано!")
 
         def action_close():
             self._logger.info("Selection closed by user.")
@@ -832,6 +878,10 @@ class ScreenAreaSelector:
         # Mouse Event Handlers
         def on_press(event: tk.Event) -> None:
             nonlocal current_state, box, drag_handle, drag_start_mx, drag_start_my, orig_box
+            try:
+                canvas.focus_set()
+            except Exception:
+                pass
             drag_start_mx = event.x
             drag_start_my = event.y
 
@@ -840,21 +890,28 @@ class ScreenAreaSelector:
                 lens_hud.handle_click(event.x, event.y)
                 return
 
+            if current_state in ("text_select", "translate_select"):
+                text_layer.handle_press(event.x, event.y)
+                return
+
             if current_state == "adjusting" and box is not None:
                 target = hit_test_lens(event.x, event.y, box, corner_hitbox=28)
                 if target in (HANDLE_NW, HANDLE_NE, HANDLE_SE, HANDLE_SW):
                     current_state = "dragging"
                     drag_handle = target
                     orig_box = box
+                    invalidate_ocr_cache()
                     clear_active_card()
                     return
                 elif target == "move":
                     current_state = "dragging"
                     drag_handle = "move"
                     orig_box = box
+                    invalidate_ocr_cache()
                     clear_active_card()
                     return
                 else:
+                    invalidate_ocr_cache()
                     clear_active_card()
                     canvas.delete("lens_corners")
                     canvas.delete("lens_badge")
@@ -864,11 +921,16 @@ class ScreenAreaSelector:
             current_state = "selecting"
             drag_handle = "create"
             orig_box = (event.x, event.y, event.x, event.y)
+            invalidate_ocr_cache()
             clear_active_card()
             lens_hud.hide()
 
         def on_drag(event: tk.Event) -> None:
             nonlocal current_state, box, drag_handle, orig_box
+            if current_state in ("text_select", "translate_select"):
+                text_layer.handle_drag(event.x, event.y)
+                return
+
             if current_state == "selecting":
                 bx1 = min(orig_box[0], event.x)
                 by1 = min(orig_box[1], event.y)
@@ -889,6 +951,10 @@ class ScreenAreaSelector:
 
         def on_release(event: tk.Event) -> None:
             nonlocal current_state, box, drag_handle
+            if current_state in ("text_select", "translate_select"):
+                text_layer.handle_release(event.x, event.y)
+                return
+
             if current_state == "selecting":
                 if box is None:
                     current_state = "idle"
@@ -915,15 +981,21 @@ class ScreenAreaSelector:
                     position_hud(animate=False)
 
         def on_motion(event: tk.Event) -> None:
-            if current_state == "adjusting" and box is not None:
-                if lens_hud.is_inside(event.x, event.y):
-                    canvas.config(cursor="hand2")
-                    root.config(cursor="hand2")
-                    lens_hud.handle_motion(event.x, event.y)
-                    return
-                else:
-                    lens_hud.clear_hover()
+            if lens_hud.is_inside(event.x, event.y):
+                canvas.config(cursor="hand2")
+                root.config(cursor="hand2")
+                lens_hud.handle_motion(event.x, event.y)
+                return
+            else:
+                lens_hud.clear_hover()
 
+            if current_state in ("text_select", "translate_select"):
+                cursor = text_layer.handle_motion(event.x, event.y)
+                canvas.config(cursor=cursor)
+                root.config(cursor=cursor)
+                return
+
+            if current_state == "adjusting" and box is not None:
                 target = hit_test_lens(event.x, event.y, box, corner_hitbox=28)
                 cursor = CURSOR_MAP.get(target, "cross")
                 canvas.config(cursor=cursor)
@@ -932,17 +1004,66 @@ class ScreenAreaSelector:
                 canvas.config(cursor="cross")
                 root.config(cursor="cross")
 
+        def on_double_click(event: tk.Event) -> None:
+            if current_state in ("text_select", "translate_select"):
+                text_layer.handle_double_click(event.x, event.y)
+
+        def on_triple_click(event: tk.Event) -> None:
+            if current_state in ("text_select", "translate_select"):
+                text_layer.handle_triple_click(event.x, event.y)
+
+        def on_key_press(event: tk.Event) -> Optional[str]:
+            code = getattr(event, "keycode", 0)
+            keysym = getattr(event, "keysym", "").lower()
+            char = getattr(event, "char", "")
+            is_ctrl = bool(event.state & 4)
+
+            # Ctrl+C or ASCII ETX (Ctrl+C character code 3)
+            if (is_ctrl and (code == 67 or keysym in ("c", "с", "cyrillic_es"))) or char == "\x03":
+                if current_state in ("text_select", "translate_select"):
+                    text_layer.execute_copy()
+                    return "break"
+
+            # Ctrl+A or ASCII SOH (Ctrl+A character code 1)
+            elif (is_ctrl and (code == 65 or keysym in ("a", "а", "cyrillic_a"))) or char == "\x01":
+                if current_state in ("text_select", "translate_select"):
+                    text_layer.select_all()
+                    return "break"
+
+            return None
+
         def on_key_enter(event: Optional[tk.Event] = None) -> None:
             if current_state == "adjusting" and box is not None:
                 action_text()
 
         def on_cancel(event: Optional[tk.Event] = None) -> None:
+            nonlocal current_state
+            if current_state in ("text_select", "translate_select"):
+                if text_layer.selected_indices:
+                    text_layer.clear_selection()
+                    return
+                text_layer.hide()
+                lens_hud.reset_active_mode()
+                current_state = "adjusting"
+                return
             action_close()
 
         canvas.bind("<ButtonPress-1>", on_press)
         canvas.bind("<B1-Motion>", on_drag)
         canvas.bind("<ButtonRelease-1>", on_release)
         canvas.bind("<Motion>", on_motion)
+        canvas.bind("<Double-Button-1>", on_double_click)
+        canvas.bind("<Triple-Button-1>", on_triple_click)
+        root.bind_all("<KeyPress>", on_key_press, add="+")
+        canvas.bind_all("<KeyPress>", on_key_press, add="+")
+        root.bind_all("<Control-c>", on_key_press, add="+")
+        root.bind_all("<Control-C>", on_key_press, add="+")
+        canvas.bind_all("<Control-c>", on_key_press, add="+")
+        canvas.bind_all("<Control-C>", on_key_press, add="+")
+        root.bind_all("<Control-Key-c>", on_key_press, add="+")
+        root.bind_all("<Control-Key-C>", on_key_press, add="+")
+        canvas.bind_all("<Control-Key-c>", on_key_press, add="+")
+        canvas.bind_all("<Control-Key-C>", on_key_press, add="+")
         root.bind_all("<Escape>", on_cancel)
         canvas.bind_all("<Escape>", on_cancel)
         root.bind_all("<Return>", on_key_enter)
@@ -951,6 +1072,7 @@ class ScreenAreaSelector:
         def cleanup_resources():
             nonlocal full_desktop_img
             is_destroyed.set()
+            text_layer.clear()
             clear_active_card()
             if hasattr(canvas, "_bg_photo"):
                 canvas._bg_photo = None

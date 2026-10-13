@@ -6,6 +6,7 @@ from typing import Callable, Optional
 from core import __version__
 from core.clipboard import get_clipboard_text, setup_universal_clipboard_shortcuts
 from storage.db import AppSettings, DatabaseManager, set_windows_autostart
+from ui.floating_hud import CapsuleButton
 
 
 class SettingsWindow:
@@ -146,21 +147,34 @@ class SettingsWindow:
                 key_ent.insert(0, val)
                 key_ent.focus_set()
 
-        paste_btn = tk.Button(
-            key_frame, text="📋 Вставить", bg="#2c3545", fg="#00e5ff", relief=tk.FLAT,
-            font=("Segoe UI", 8, "bold"), command=paste_key, cursor="hand2"
+        paste_btn = CapsuleButton(
+            key_frame,
+            text="📋 Вставить",
+            style="secondary",
+            card_bg="#181c24",
+            height=28,
+            font=("Segoe UI", 8, "bold"),
+            command=paste_key,
         )
         paste_btn.pack(side=tk.RIGHT, padx=(4, 0))
 
         def toggle_key():
             if key_ent.cget("show") == "":
                 key_ent.config(show="*")
-                show_btn.config(text="👁 Показать")
+                show_btn.set_text("👁 Показать")
             else:
                 key_ent.config(show="")
-                show_btn.config(text="🔒 Скрыть")
+                show_btn.set_text("🔒 Скрыть")
 
-        show_btn = tk.Button(key_frame, text="👁 Показать", bg="#2c3545", fg="#ffffff", relief=tk.FLAT, font=("Segoe UI", 8), command=toggle_key, cursor="hand2")
+        show_btn = CapsuleButton(
+            key_frame,
+            text="👁 Показать",
+            style="secondary",
+            card_bg="#181c24",
+            height=28,
+            font=("Segoe UI", 8, "bold"),
+            command=toggle_key,
+        )
         show_btn.pack(side=tk.RIGHT, padx=(4, 0))
 
         # 5. Checkboxes (Sound, Autostart, HUD, AI)
@@ -253,22 +267,21 @@ class SettingsWindow:
             if self._on_save:
                 self._on_save(new_settings)
 
-            btn_save.config(text="✓ Настройки сохранены!", bg="#00e676", fg="#181c24")
+            btn_save.set_text("✓ Настройки сохранены!")
             win.update_idletasks()
             win.after(350, on_close)
 
-        btn_save = tk.Button(
+        btn_save = CapsuleButton(
             frame,
             text="💾 Сохранить настройки",
+            style="primary",
+            card_bg="#181c24",
+            width=430,
+            height=36,
             font=("Segoe UI", 10, "bold"),
-            bg="#00bcd4",
-            fg="#ffffff",
-            activebackground="#00acc1",
-            relief=tk.FLAT,
             command=save,
-            cursor="hand2",
         )
-        btn_save.pack(fill=tk.X, pady=(16, 0), ipady=6)
+        btn_save.pack(fill=tk.X, pady=(16, 0))
 
         # Bind universal Ctrl+V, Ctrl+C under Russian layout
         setup_universal_clipboard_shortcuts(win)

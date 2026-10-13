@@ -394,6 +394,8 @@ def main() -> None:
     h_mutex, h_event = acquire_primary_instance()
     if sys.platform == "win32" and h_mutex is None:
         # ScreenLens is already running: signal it to open capture overlay immediately!
+        print("[ScreenLens] Приложение уже запущено в фоне (иконка в трее).")
+        print("[ScreenLens] Отправлен сигнал на захват экрана (или используйте Ctrl + Alt + Space).")
         signal_running_instance()
         sys.exit(0)
 

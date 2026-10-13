@@ -86,9 +86,23 @@ Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
 
-# Temporary screenshots / capture caches (keep assets/)
+# Temporary screenshots / capture caches (keep assets/ and benchmark images)
 *.png
 *.jpg
 *.jpeg
 !assets/*.png
 !assets/*.ico
+!tests/benchmark/images/*.png
+
+# .NET / C# prototype (tracked in feature/screenlens-next)
+ScreenLens.Next/
+ScreenLens.Next.Tests/
+ScreenLens.Next.sln
+run_next.cmd
+run_next.ps1
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates

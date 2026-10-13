@@ -53,7 +53,10 @@ class OCRResult:
     image_path: Path
     language: str = "rus+eng"
     confidence: float = 0.0
+    lines: tuple[dict, ...] = ()
     is_empty: bool = field(init=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "is_empty", len(self.cleaned_text.strip()) == 0)
+        if not isinstance(self.lines, tuple):
+            object.__setattr__(self, "lines", tuple(self.lines))

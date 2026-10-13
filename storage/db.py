@@ -87,6 +87,7 @@ class AppSettings:
     sound_enabled: bool = True
     autostart: bool = False
     show_hud: bool = True
+    auto_copy: bool = False
 
 
 @dataclass

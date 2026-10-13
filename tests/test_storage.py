@@ -16,7 +16,7 @@ class TestStorageSecurity(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_dpapi_protect_unprotect(self):
-        raw_key = "AQ.Ab8RN6Lc2vuPV3t2yaMrfV9Cr0DQw7JDdkRUxxBhzjRWxfB0DQ"
+        raw_key = "dummy_test_api_key_placeholder_12345"
         encrypted = protect_secret(raw_key)
         self.assertNotEqual(encrypted, raw_key)
         self.assertTrue(encrypted.startswith("DPAPI:"))
@@ -25,7 +25,7 @@ class TestStorageSecurity(unittest.TestCase):
         self.assertEqual(decrypted, raw_key)
 
     def test_database_stores_encrypted_key(self):
-        raw_key = "AQ.Ab8RN6Lc2vuPV3t2yaMrfV9Cr0DQw7JDdkRUxxBhzjRWxfB0DQ"
+        raw_key = "dummy_test_api_key_placeholder_12345"
         settings = self.db.get_settings()
         settings.gemini_api_key = raw_key
         settings.gemini_model = "gemini-3.5-flash-lite"

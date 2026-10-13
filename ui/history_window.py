@@ -9,6 +9,7 @@ from PIL import Image, ImageTk
 
 from core.clipboard import ClipboardManager
 from storage.db import DatabaseManager, HistoryItem
+from ui.floating_hud import CapsuleButton
 
 
 class HistoryWindow:
@@ -50,13 +51,13 @@ class HistoryWindow:
         left_header.pack(fill=tk.X)
         tk.Label(left_header, text="📜 Недавние снимки", font=("Segoe UI", 10, "bold"), fg="#00e5ff", bg="#12151c").pack(side=tk.LEFT)
 
-        btn_clear = tk.Button(
+        btn_clear = CapsuleButton(
             left_header,
             text="🗑 Очистить",
-            font=("Segoe UI", 8),
-            bg="#d32f2f",
-            fg="#ffffff",
-            relief=tk.FLAT,
+            style="danger",
+            card_bg="#12151c",
+            height=26,
+            font=("Segoe UI", 8, "bold"),
             command=lambda: self._confirm_clear(win, tree),
         )
         btn_clear.pack(side=tk.RIGHT)
@@ -125,24 +126,24 @@ class HistoryWindow:
             if path_str and Path(path_str).exists():
                 subprocess.Popen(f'explorer /select,"{Path(path_str).resolve()}"')
 
-        btn_copy = tk.Button(
+        btn_copy = CapsuleButton(
             act_bar,
             text="📋 Скопировать текст",
-            bg="#00bcd4",
-            fg="#ffffff",
+            style="primary",
+            card_bg="#181c24",
+            height=32,
             font=("Segoe UI", 9, "bold"),
-            relief=tk.FLAT,
             command=copy_current_text,
         )
         btn_copy.pack(side=tk.LEFT, padx=(0, 6))
 
-        btn_open = tk.Button(
+        btn_open = CapsuleButton(
             act_bar,
             text="📁 Показать в папке",
-            bg="#2c3545",
-            fg="#ffffff",
-            font=("Segoe UI", 9),
-            relief=tk.FLAT,
+            style="secondary",
+            card_bg="#181c24",
+            height=32,
+            font=("Segoe UI", 9, "bold"),
             command=open_file_folder,
         )
         btn_open.pack(side=tk.LEFT)

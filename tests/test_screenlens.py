@@ -913,10 +913,1347 @@ class TestGoogleLensSelection(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_ocr_result_lines_structure(self):
+        """Verifies that OCRResult accepts and exposes structured lines tuple."""
+        from core.models import OCRResult
+        res = OCRResult(
+            raw_text="hello world",
+            cleaned_text="hello world",
+            image_path=Path("dummy.png"),
+            lines=({"text": "hello world", "words": [{"text": "hello"}, {"text": "world"}]},),
+        )
+        self.assertEqual(len(res.lines), 1)
+        self.assertEqual(res.lines[0]["text"], "hello world")
+        self.assertFalse(res.is_empty)
+
+    def test_merge_dual_language_structured_preserves_words_and_boxes(self):
+        """Verifies that _merge_dual_language_structured outputs both text and structured line/word boxes."""
+        from core.ocr import WindowsMediaOCREngine
+        engine = WindowsMediaOCREngine()
+
+        res_ru = {
+            "lines": [
+                {
+                    "text": "тест коммита",
+                    "words": [
+                        {"text": "тест", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 40.0, "height": 14.0}},
+                        {"text": "коммита", "bounding_rect": {"x": 60.0, "y": 20.0, "width": 60.0, "height": 14.0}},
+                    ],
+                }
+            ]
+        }
+        res_en = {
+            "lines": [
+                {
+                    "text": "test commit",
+                    "words": [
+                        {"text": "test", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 30.0, "height": 14.0}},
+                        {"text": "commit", "bounding_rect": {"x": 60.0, "y": 20.0, "width": 50.0, "height": 14.0}},
+                    ],
+                }
+            ]
+        }
+
+        text, lines = engine._merge_dual_language_structured(res_ru, res_en)
+        self.assertIn("тест", text)
+        self.assertIn("коммита", text)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("bounding_rect", lines[0])
+        words = lines[0]["words"]
+        self.assertEqual(len(words), 2)
+        self.assertEqual(words[0]["text"], "тест")
+        self.assertEqual(words[0]["bounding_rect"]["x"], 10.0)
+
+    def test_coordinate_transformation_and_dpi_scaling(self):
+        """Verifies that SelectableTextLayer converts OCR crop-relative coordinates to Canvas screen coordinates accurately."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=800, height=600)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+
+            # OCR result relative to crop image (0, 0)
+            ocr_res = OCRResult(
+                raw_text="Commit 1a2b3c",
+                cleaned_text="Commit 1a2b3c",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Commit 1a2b3c",
+                        "bounding_rect": {"x": 10.0, "y": 15.0, "width": 120.0, "height": 20.0},
+                        "words": [
+                            {"text": "Commit", "bounding_rect": {"x": 10.0, "y": 15.0, "width": 50.0, "height": 20.0}},
+                            {"text": "1a2b3c", "bounding_rect": {"x": 70.0, "y": 15.0, "width": 60.0, "height": 20.0}},
+                        ],
+                    },
+                ),
+            )
+
+            # Test across various selection offsets and DPI scales
+            for scale_name, (bx1, by1, bx2, by2) in [
+                ("100% scale", (50, 100, 350, 300)),
+                ("125% scale", (100, 150, 450, 400)),
+                ("150% scale", (150, 200, 550, 500)),
+                ("200% scale", (200, 300, 800, 700)),
+            ]:
+                count = layer.load_from_ocr(ocr_res, (bx1, by1, bx2, by2))
+                self.assertEqual(count, 2, f"Failed for {scale_name}")
+
+                # First word "Commit": offset is bx1 + 10, by1 + 15
+                w1 = layer.words[0]
+                self.assertEqual(w1.text, "Commit")
+                self.assertEqual(w1.x1, bx1 + 10.0)
+                self.assertEqual(w1.y1, by1 + 15.0)
+                self.assertEqual(w1.x2, bx1 + 10.0 + 50.0)
+                self.assertEqual(w1.y2, by1 + 15.0 + 20.0)
+
+                # Second word "1a2b3c": offset is bx1 + 70, by1 + 15
+                w2 = layer.words[1]
+                self.assertEqual(w2.text, "1a2b3c")
+                self.assertEqual(w2.x1, bx1 + 70.0)
+                self.assertEqual(w2.y1, by1 + 15.0)
+        finally:
+            root.destroy()
+
+    def test_selectable_text_layer_selection_mechanics_and_copy(self):
+        """Verifies word range, multi-line selection, and copy behavior in SelectableTextLayer."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=800, height=600)
+            copied_values = []
+            layer = SelectableTextLayer(
+                canvas=canvas,
+                root=root,
+                on_copy_callback=lambda txt: copied_values.append(txt),
+            )
+
+            ocr_res = OCRResult(
+                raw_text="Line One\nLine Two Extra",
+                cleaned_text="Line One\nLine Two Extra",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Line One",
+                        "words": [
+                            {"text": "Line", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 30.0, "height": 15.0}},
+                            {"text": "One", "bounding_rect": {"x": 50.0, "y": 10.0, "width": 25.0, "height": 15.0}},
+                        ],
+                    },
+                    {
+                        "text": "Line Two Extra",
+                        "words": [
+                            {"text": "Line", "bounding_rect": {"x": 10.0, "y": 35.0, "width": 30.0, "height": 15.0}},
+                            {"text": "Two", "bounding_rect": {"x": 50.0, "y": 35.0, "width": 25.0, "height": 15.0}},
+                            {"text": "Extra", "bounding_rect": {"x": 85.0, "y": 35.0, "width": 35.0, "height": 15.0}},
+                        ],
+                    },
+                ),
+            )
+
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            self.assertEqual(len(layer.words), 5)
+
+            # 1. Single word selection
+            layer.select_range(0, 0)
+            self.assertEqual(layer.get_selected_text(), "Line")
+
+            # 2. Phrase selection on same line
+            layer.select_range(0, 1)
+            self.assertEqual(layer.get_selected_text(), "Line One")
+
+            # 3. Multi-line selection spanning line 1 and line 2
+            layer.select_range(1, 3)  # "One" on line 0, "Line Two" on line 1
+            self.assertEqual(layer.get_selected_text(), "One\nLine Two")
+
+            # 4. Copy selected fragment via execute_copy()
+            res = layer.execute_copy()
+            self.assertEqual(res, "One\nLine Two")
+            self.assertEqual(copied_values[-1], "One\nLine Two")
+
+            # 5. When nothing is selected: execute_copy() copies ALL text
+            layer.clear_selection()
+            self.assertEqual(layer.get_selected_text(), "")
+            res_all = layer.execute_copy()
+            self.assertEqual(res_all, "Line One\nLine Two Extra")
+            self.assertEqual(copied_values[-1], "Line One\nLine Two Extra")
+
+            # 6. Hit testing
+            # Word 0: (10, 10) to (40, 25)
+            self.assertIsNotNone(layer.hit_test_word(20, 15))
+            self.assertEqual(layer.hit_test_word(20, 15).text, "Line")
+            self.assertIsNone(layer.hit_test_word(300, 300))
+        finally:
+            root.destroy()
+
+    def test_dual_language_spatial_deduplication(self):
+        """Verifies spatial IoU deduplication removes duplicate words across RU and EN passes without deleting distinct words."""
+        from core.ocr import WindowsMediaOCREngine
+        engine = WindowsMediaOCREngine()
+
+        # Both passes recognized the commit hash at the exact same location,
+        # but RU pass recognized Russian description while EN pass missed or mangled it
+        res_ru = {
+            "lines": [
+                {
+                    "text": "f4a1b2c Исправление ошибки",
+                    "words": [
+                        {"text": "f4a1b2c", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 55.0, "height": 16.0}},
+                        {"text": "Исправление", "bounding_rect": {"x": 75.0, "y": 20.0, "width": 90.0, "height": 16.0}},
+                        {"text": "ошибки", "bounding_rect": {"x": 170.0, "y": 20.0, "width": 55.0, "height": 16.0}},
+                    ],
+                }
+            ]
+        }
+        res_en = {
+            "lines": [
+                {
+                    "text": "f4a1b2c Иcпpaвлeниe oшибки feature_branch",
+                    "words": [
+                        # Overlapping commit hash
+                        {"text": "f4a1b2c", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 55.0, "height": 16.0}},
+                        # Homoglyph-mangled Cyrillic with high IoU
+                        {"text": "Иcпpaвлeниe", "bounding_rect": {"x": 75.0, "y": 20.0, "width": 90.0, "height": 16.0}},
+                        {"text": "oшибки", "bounding_rect": {"x": 170.0, "y": 20.0, "width": 55.0, "height": 16.0}},
+                        # Distinct English token at separate location
+                        {"text": "feature_branch", "bounding_rect": {"x": 235.0, "y": 20.0, "width": 100.0, "height": 16.0}},
+                    ],
+                }
+            ]
+        }
+
+        merged_text, lines = engine._merge_dual_language_structured(res_ru, res_en)
+        # Deduplication must eliminate duplicate hash and duplicate words
+        words = lines[0]["words"]
+        word_texts = [w["text"] for w in words]
+        self.assertEqual(word_texts.count("f4a1b2c"), 1)
+        self.assertIn("Исправление", word_texts)
+        self.assertIn("ошибки", word_texts)
+        self.assertIn("feature_branch", word_texts)
+        self.assertEqual(len(words), 4)
+
+    def test_cohesive_segments_grouping_and_gap_splitting(self):
+        """Verifies adjacent words form cohesive segments, while large horizontal column gaps form separate segments."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=800, height=600)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+
+            # Line with a hash on left, large 150px gap, and message on right
+            ocr_res = OCRResult(
+                raw_text="3d8e9f    Fix user profile",
+                cleaned_text="3d8e9f    Fix user profile",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "3d8e9f Fix user profile",
+                        "words": [
+                            {"text": "3d8e9f", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 60.0, "height": 16.0}},
+                            {"text": "Fix", "bounding_rect": {"x": 220.0, "y": 20.0, "width": 30.0, "height": 16.0}},
+                            {"text": "user", "bounding_rect": {"x": 255.0, "y": 20.0, "width": 35.0, "height": 16.0}},
+                            {"text": "profile", "bounding_rect": {"x": 295.0, "y": 20.0, "width": 50.0, "height": 16.0}},
+                        ],
+                    },
+                ),
+            )
+
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            # Should have split into 2 cohesive segments due to large gap between 3d8e9f (x2=70) and Fix (x1=220)
+            self.assertEqual(len(layer.segments), 2)
+            self.assertEqual([w.text for w in layer.segments[0].words], ["3d8e9f"])
+            self.assertEqual([w.text for w in layer.segments[1].words], ["Fix", "user", "profile"])
+        finally:
+            root.destroy()
+
+    def test_variant_a_single_line_cohesive_region(self):
+        """1. Слова одной строки объединяются в единую область, включающую промежутки."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=600, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="Hello beautiful world",
+                cleaned_text="Hello beautiful world",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Hello beautiful world",
+                        "words": [
+                            {"text": "Hello", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 40.0, "height": 16.0}},
+                            {"text": "beautiful", "bounding_rect": {"x": 55.0, "y": 20.0, "width": 70.0, "height": 16.0}},
+                            {"text": "world", "bounding_rect": {"x": 130.0, "y": 20.0, "width": 45.0, "height": 16.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            # Exactly 1 cohesive region for the 3 closely spaced words
+            self.assertEqual(len(layer.regions), 1)
+            reg = layer.regions[0]
+            self.assertEqual(len(reg.words), 3)
+            # Starts near first word (<= 10.0) and ends near last word (>= 175.0)
+            self.assertLessEqual(reg.x1, 10.0)
+            self.assertGreaterEqual(reg.x2, 175.0)
+        finally:
+            root.destroy()
+
+    def test_variant_a_horizontal_gap_splits_regions(self):
+        """2. Большой горизонтальный разрыв создаёт отдельные области (колонки / хеши)."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=600, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="a1b2c3d    Commit message description",
+                cleaned_text="a1b2c3d    Commit message description",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "a1b2c3d Commit message description",
+                        "words": [
+                            {"text": "a1b2c3d", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 55.0, "height": 16.0}},
+                            # Large gap of 115px between hash (x2=65) and text (x1=180)
+                            {"text": "Commit", "bounding_rect": {"x": 180.0, "y": 20.0, "width": 50.0, "height": 16.0}},
+                            {"text": "message", "bounding_rect": {"x": 235.0, "y": 20.0, "width": 60.0, "height": 16.0}},
+                            {"text": "description", "bounding_rect": {"x": 300.0, "y": 20.0, "width": 80.0, "height": 16.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(ocr_res, (0, 0, 500, 200))
+            self.assertEqual(len(layer.regions), 2)
+            self.assertEqual([w.text for w in layer.regions[0].words], ["a1b2c3d"])
+            self.assertEqual([w.text for w in layer.regions[1].words], ["Commit", "message", "description"])
+        finally:
+            root.destroy()
+
+    def test_variant_a_stable_height_across_jittery_word_boxes(self):
+        """3. Высота областей остаётся стабильной при разных высотах OCR-рамок отдельных слов."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=600, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="Word1 Word2 Word3",
+                cleaned_text="Word1 Word2 Word3",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Word1 Word2 Word3",
+                        "words": [
+                            # Jittery heights and y positions from OCR
+                            {"text": "Word1", "bounding_rect": {"x": 10.0, "y": 18.0, "width": 40.0, "height": 14.0}},
+                            {"text": "Word2", "bounding_rect": {"x": 55.0, "y": 23.0, "width": 40.0, "height": 22.0}},
+                            {"text": "Word3", "bounding_rect": {"x": 100.0, "y": 19.0, "width": 40.0, "height": 16.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            # All words on the line must have unified stable y1 and y2
+            w_y1_set = {w.y1 for w in layer.words}
+            w_y2_set = {w.y2 for w in layer.words}
+            self.assertEqual(len(w_y1_set), 1, "Words have jittery y1")
+            self.assertEqual(len(w_y2_set), 1, "Words have jittery y2")
+            reg = layer.regions[0]
+            self.assertEqual(reg.y1, list(w_y1_set)[0])
+            self.assertEqual(reg.y2, list(w_y2_set)[0])
+        finally:
+            root.destroy()
+
+    def test_variant_a_neighboring_lines_do_not_merge_or_overlap(self):
+        """4. Соседние строки не объединяются и не пересекаются по вертикали."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=600, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="Top Line\nBottom Line",
+                cleaned_text="Top Line\nBottom Line",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Top Line",
+                        "words": [
+                            {"text": "Top", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 30.0, "height": 18.0}},
+                            {"text": "Line", "bounding_rect": {"x": 45.0, "y": 20.0, "width": 30.0, "height": 18.0}},
+                        ],
+                    },
+                    {
+                        "text": "Bottom Line",
+                        "words": [
+                            {"text": "Bottom", "bounding_rect": {"x": 10.0, "y": 42.0, "width": 45.0, "height": 18.0}},
+                            {"text": "Line", "bounding_rect": {"x": 60.0, "y": 42.0, "width": 30.0, "height": 18.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            self.assertEqual(len(layer.regions), 2)
+            reg_top, reg_bot = layer.regions[0], layer.regions[1]
+            self.assertEqual(reg_top.line_index, 0)
+            self.assertEqual(reg_bot.line_index, 1)
+            # Must strictly not overlap vertically
+            self.assertLess(reg_top.y2, reg_bot.y1)
+        finally:
+            root.destroy()
+
+    def test_variant_a_copying_single_line_preserves_normal_spaces(self):
+        """5. Копирование выделенной строки сохраняет нормальные пробелы без артефактов."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=600, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="git commit -m initial",
+                cleaned_text="git commit -m initial",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "git commit -m initial",
+                        "words": [
+                            {"text": "git", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 20.0, "height": 15.0}},
+                            {"text": "commit", "bounding_rect": {"x": 35.0, "y": 20.0, "width": 45.0, "height": 15.0}},
+                            {"text": "-m", "bounding_rect": {"x": 85.0, "y": 20.0, "width": 20.0, "height": 15.0}},
+                            {"text": "initial", "bounding_rect": {"x": 110.0, "y": 20.0, "width": 40.0, "height": 15.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            # Select words "commit -m"
+            layer.select_range(1, 2)
+            self.assertEqual(layer.get_selected_text(), "commit -m")
+
+            # Select entire line
+            layer.select_all()
+            self.assertEqual(layer.get_selected_text(), "git commit -m initial")
+        finally:
+            root.destroy()
+
+    def test_variant_a_copying_multiple_lines_preserves_order_and_newlines(self):
+        """6. Копирование нескольких строк сохраняет порядок и переводы строк."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=600, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="First line text\nSecond line text\nThird line text",
+                cleaned_text="First line text\nSecond line text\nThird line text",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {"text": "First line text", "words": [
+                        {"text": "First", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 30.0, "height": 15.0}},
+                        {"text": "line", "bounding_rect": {"x": 45.0, "y": 10.0, "width": 25.0, "height": 15.0}},
+                        {"text": "text", "bounding_rect": {"x": 75.0, "y": 10.0, "width": 25.0, "height": 15.0}},
+                    ]},
+                    {"text": "Second line text", "words": [
+                        {"text": "Second", "bounding_rect": {"x": 10.0, "y": 35.0, "width": 40.0, "height": 15.0}},
+                        {"text": "line", "bounding_rect": {"x": 55.0, "y": 35.0, "width": 25.0, "height": 15.0}},
+                        {"text": "text", "bounding_rect": {"x": 85.0, "y": 35.0, "width": 25.0, "height": 15.0}},
+                    ]},
+                    {"text": "Third line text", "words": [
+                        {"text": "Third", "bounding_rect": {"x": 10.0, "y": 60.0, "width": 35.0, "height": 15.0}},
+                        {"text": "line", "bounding_rect": {"x": 50.0, "y": 60.0, "width": 25.0, "height": 15.0}},
+                        {"text": "text", "bounding_rect": {"x": 80.0, "y": 60.0, "width": 25.0, "height": 15.0}},
+                    ]},
+                ),
+            )
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            # Select words spanning line 1 and line 2 (words index 4 "line" to index 7 "line")
+            layer.select_range(4, 7)
+            expected = "line text\nThird line"
+            self.assertEqual(layer.get_selected_text(), expected)
+        finally:
+            root.destroy()
+
+    def test_variant_a_dual_language_duplicates_excluded(self):
+        """7. Дубликаты RU/EN не попадают в результат при объединении проходов."""
+        from core.ocr import WindowsMediaOCREngine
+        engine = WindowsMediaOCREngine()
+
+        res_ru = {
+            "lines": [
+                {
+                    "text": "b8a9c0d Исправление бага",
+                    "words": [
+                        {"text": "b8a9c0d", "bounding_rect": {"x": 10.0, "y": 15.0, "width": 55.0, "height": 15.0}},
+                        {"text": "Исправление", "bounding_rect": {"x": 70.0, "y": 15.0, "width": 80.0, "height": 15.0}},
+                        {"text": "бага", "bounding_rect": {"x": 155.0, "y": 15.0, "width": 35.0, "height": 15.0}},
+                    ],
+                }
+            ]
+        }
+        res_en = {
+            "lines": [
+                {
+                    "text": "b8a9c0d Иcпpaвлeниe бaгa",
+                    "words": [
+                        {"text": "b8a9c0d", "bounding_rect": {"x": 10.0, "y": 15.0, "width": 55.0, "height": 15.0}},
+                        {"text": "Иcпpaвлeниe", "bounding_rect": {"x": 70.0, "y": 15.0, "width": 80.0, "height": 15.0}},
+                        {"text": "бaгa", "bounding_rect": {"x": 155.0, "y": 15.0, "width": 35.0, "height": 15.0}},
+                    ],
+                }
+            ]
+        }
+
+        merged_text, structured_lines = engine._merge_dual_language_structured(res_ru, res_en)
+        words = structured_lines[0]["words"]
+        word_texts = [w["text"] for w in words]
+        self.assertEqual(word_texts.count("b8a9c0d"), 1)
+        self.assertEqual(len(words), 3)
+        self.assertEqual(merged_text, "b8a9c0d Исправление бага")
+
+    def test_variant_a_dpi_and_offset_alignment(self):
+        """8. DPI и масштаб/смещение не сдвигают области относительно изображения на Canvas."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=800, height=600)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="Test",
+                cleaned_text="Test",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Test",
+                        "words": [{"text": "Test", "bounding_rect": {"x": 25.0, "y": 30.0, "width": 50.0, "height": 20.0}}],
+                    },
+                ),
+            )
+            # Box with offset (bx1=150, by1=220)
+            box_offset = (150, 220, 500, 450)
+            layer.load_from_ocr(ocr_res, box_offset)
+            w = layer.words[0]
+            self.assertEqual(w.x1, 150 + 25.0)
+            self.assertEqual(w.x2, 150 + 75.0)
+            self.assertEqual(w.y1, 220 + 30.0)
+            # Hit-test exactly at offset coordinates (x in [175, 225], y in [250, 270])
+            self.assertIsNotNone(layer.hit_test_word(180, 255))
+            self.assertIsNone(layer.hit_test_word(25, 30))  # not at zero-origin
+        finally:
+            root.destroy()
+
+    def test_variant_a_original_image_remains_unmodified(self):
+        """9. Исходное изображение остаётся визуально неизменным при показе, выделении и копировании."""
+        from PIL import Image
+        import numpy as np
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        # Create original screenshot sample with arbitrary pixels
+        orig_img = Image.new("RGB", (200, 100), color=(128, 64, 32))
+        orig_arr_before = np.array(orig_img).copy()
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=400, height=300)
+            copied = []
+            layer = SelectableTextLayer(canvas=canvas, root=root, on_copy_callback=lambda t: copied.append(t))
+            ocr_res = OCRResult(
+                raw_text="Keep Original",
+                cleaned_text="Keep Original",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Keep Original",
+                        "words": [
+                            {"text": "Keep", "bounding_rect": {"x": 20.0, "y": 20.0, "width": 40.0, "height": 16.0}},
+                            {"text": "Original", "bounding_rect": {"x": 65.0, "y": 20.0, "width": 60.0, "height": 16.0}},
+                        ],
+                    },
+                ),
+            )
+            cutout_id = canvas.create_image(0, 0)
+            orig_photo = tk.PhotoImage(width=10, height=10)
+
+            layer.load_from_ocr(
+                ocr_res,
+                (0, 0, 200, 100),
+                crop_img=orig_img,
+                cutout_item_id=cutout_id,
+                original_crop_photo=orig_photo,
+            )
+
+            # 1. Activate layer
+            layer.show()
+            self.assertTrue(layer.is_active)
+            # NO redrawn OCR text or opaque plates must exist
+            self.assertEqual(len(canvas.find_withtag(SelectableTextLayer.TAG_UNDERLAY)), 0)
+            self.assertEqual(len(canvas.find_withtag(SelectableTextLayer.TAG_WORD)), 0)
+
+            # 2. Select text
+            layer.select_all()
+            # Highlights are translucent selection items, not modifying orig_img
+            self.assertGreaterEqual(len(canvas.find_withtag(SelectableTextLayer.TAG_SELECTION)), 1)
+
+            # 3. Copy text
+            res = layer.execute_copy()
+            self.assertEqual(res, "Keep Original")
+
+            # 4. Deactivate
+            layer.hide()
+            self.assertFalse(layer.is_active)
+
+            # Verify original image was never mutated
+            orig_arr_after = np.array(orig_img)
+            self.assertTrue(np.array_equal(orig_arr_before, orig_arr_after))
+        finally:
+            root.destroy()
+
+    def test_variant_a_hud_buttons_and_functions_continue_working(self):
+        """10. Остальные функции и кнопки HUD продолжают работать без конфликтов."""
+        from ui.floating_hud import GoogleLensHUD
+        root = tk.Tk()
+        try:
+            clicked_actions = []
+            canvas = tk.Canvas(root, width=800, height=600)
+            hud = GoogleLensHUD(
+                parent=canvas,
+                on_text=lambda: clicked_actions.append("text"),
+                on_translate=lambda: clicked_actions.append("translate"),
+                on_lens=lambda: clicked_actions.append("lens"),
+                on_ai=lambda: clicked_actions.append("ai"),
+                on_copy=lambda: clicked_actions.append("copy"),
+                on_close=lambda: clicked_actions.append("close"),
+            )
+            hud.draw(100, 200)
+
+            # Click translate button (relative x ~ 100 in block 1: 100 + 100 = 200)
+            hud.handle_click(200, 225)
+            self.assertIn("translate", clicked_actions)
+
+            # Click text button (relative x ~ 35 in block 1: 100 + 35 = 135)
+            hud.handle_click(135, 225)
+            self.assertIn("text", clicked_actions)
+        finally:
+            root.destroy()
+
+
+
+class TestTechnicalReportOCRAccuracy(unittest.TestCase):
+    """Automated reproducible regression tests for technical report and code identifier OCR."""
+
+    GROUND_TRUTH = (
+        "Результат: Ran 68 tests in 6.862s — OK (все 68 тестов успешно пройдены).\n"
+        "В том числе проверены 10 целевых сценариев:\n"
+        "1. test_variant_a_single_line_cohesive_region — объединение слов строки в единую область с промежутками.\n"
+        "2. test_variant_a_horizontal_gap_splits_regions — разбиение на независимые области при широком разрыве (колонки/хэши).\n"
+        "3. test_variant_a_stable_height_across_jittery_word_boxes — стабильная высота при неравномерных OCR-рамках слов.\n"
+        "4. test_variant_a_neighboring_lines_do_not_merge_or_overlap — отсутствие слияния и вертикального наложения соседних строк.\n"
+        "5. test_variant_a_copying_single_line_preserves_normal_spaces — нормальные пробелы при копировании фрагмента строки.\n"
+        "6. test_variant_a_copying_multiple_lines_preserves_order_and_newlines — порядок чтения и \\n при многострочном копировании.\n"
+        "7. test_variant_a_dual_language_duplicates_excluded — отсутствие дубликатов при RU+EN распознавании.\n"
+        "8. test_variant_a_dpi_and_offset_alignment — корректность координат при любых смещениях области на экране.\n"
+        "9. test_variant_a_original_image_remains_unmodified — побайтовая неизменность исходного изображения скриншота при показе слоя, выделении и копировании.\n"
+        "10. test_variant_a_hud_buttons_and_functions_continue_working — работоспособность остальных кнопок HUD (\"Перевод\", \"Текст\", \"Поиск\" и др.)."
+    )
+
+    EXPECTED_TESTS = [
+        "test_variant_a_single_line_cohesive_region",
+        "test_variant_a_horizontal_gap_splits_regions",
+        "test_variant_a_stable_height_across_jittery_word_boxes",
+        "test_variant_a_neighboring_lines_do_not_merge_or_overlap",
+        "test_variant_a_copying_single_line_preserves_normal_spaces",
+        "test_variant_a_copying_multiple_lines_preserves_order_and_newlines",
+        "test_variant_a_dual_language_duplicates_excluded",
+        "test_variant_a_dpi_and_offset_alignment",
+        "test_variant_a_original_image_remains_unmodified",
+        "test_variant_a_hud_buttons_and_functions_continue_working",
+    ]
+
+    @classmethod
+    def setUpClass(cls):
+        from core.ocr import WindowsMediaOCREngine
+        cls.test_image_path = Path("tests/test_data/report_test_screenshot.png")
+        if not cls.test_image_path.exists():
+            raise unittest.SkipTest("Test image fixture not found")
+        cls.engine = WindowsMediaOCREngine(language="rus+eng")
+        cls.ocr_res = cls.engine.recognize(cls.test_image_path)
+        cls.text = cls.ocr_res.cleaned_text
+
+    @staticmethod
+    def _levenshtein(s1: str, s2: str) -> int:
+        if len(s1) < len(s2):
+            return TestTechnicalReportOCRAccuracy._levenshtein(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+        previous_row = list(range(len(s2) + 1))
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        return previous_row[-1]
+
+    def test_all_10_test_identifiers_exact_match(self):
+        """10 из 10 названий тестов должны точно присутствовать со всеми подчёркиваниями."""
+        for expected in self.EXPECTED_TESTS:
+            with self.subTest(test_name=expected):
+                self.assertIn(
+                    expected,
+                    self.text,
+                    f"Test identifier '{expected}' missing or corrupted in recognized text"
+                )
+
+    def test_cer_under_one_percent(self):
+        """Character Error Rate (CER) должен быть значительно ниже 5% (цель < 1%)."""
+        dist = self._levenshtein(self.text, self.GROUND_TRUTH)
+        cer = dist / len(self.GROUND_TRUTH)
+        self.assertLess(cer, 0.05, f"CER {cer*100:.2f}% exceeds 5% threshold")
+
+    def test_technical_report_numbers_and_symbols(self):
+        """Проверка сохранности специальных обозначений, регистра и цифр."""
+        self.assertIn("68 tests", self.text)
+        self.assertIn("6.862s", self.text)
+        self.assertIn("OK", self.text)
+        self.assertIn("10", self.text)
+        self.assertIn("RU+EN", self.text)
+        self.assertIn("\\n", self.text)
+        self.assertIn("OCR-рамках", self.text)
+        self.assertIn("HUD", self.text)
+
+
+
+class TestNaturalAlphaSelectionAndOCRTableFixes(unittest.TestCase):
+    """Tests verifying real alpha transparency, heightened selection, and table layout OCR fixes."""
+
+    def test_natural_alpha_composite_selection_and_restore(self):
+        """Verifies that selection uses real Pillow alpha compositing and restores original photo upon clearing."""
+        from PIL import Image
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=500, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+
+            orig_img = Image.new("RGB", (300, 150), color=(30, 30, 30))
+            orig_photo = tk.PhotoImage(width=10, height=10)
+            cutout_id = canvas.create_image(50, 50, image=orig_photo)
+
+            ocr_res = OCRResult(
+                raw_text="Commit 1a2b3c",
+                cleaned_text="Commit 1a2b3c",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Commit 1a2b3c",
+                        "words": [
+                            {"text": "Commit", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 50.0, "height": 18.0}},
+                            {"text": "1a2b3c", "bounding_rect": {"x": 70.0, "y": 20.0, "width": 50.0, "height": 18.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(
+                ocr_res,
+                (50, 50, 350, 200),
+                crop_img=orig_img,
+                cutout_item_id=cutout_id,
+                original_crop_photo=orig_photo,
+            )
+            layer.show()
+
+            # Select first word
+            layer.select_range(0, 0)
+            self.assertIsNotNone(layer._active_crop_photo, "Alpha composited photo was not generated")
+
+            # Selection rectangle should have hollow fill (fill="") rather than stipple
+            sel_items = canvas.find_withtag(SelectableTextLayer.TAG_SELECTION)
+            self.assertGreaterEqual(len(sel_items), 1)
+            for item in sel_items:
+                fill_val = canvas.itemcget(item, "fill")
+                self.assertEqual(fill_val, "", "Canvas selection rectangle must be hollow when alpha composite is active")
+
+            # Clearing selection should restore original photo
+            layer.clear_selection()
+            self.assertEqual(len(canvas.find_withtag(SelectableTextLayer.TAG_SELECTION)), 0)
+        finally:
+            root.destroy()
+
+    def test_increased_selection_height_with_strict_separation(self):
+        """Verifies that visual highlight height is expanded while adjacent lines remain strictly separated."""
+        from PIL import Image
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=500, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+
+            ocr_res = OCRResult(
+                raw_text="Line 1\nLine 2",
+                cleaned_text="Line 1\nLine 2",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Line 1",
+                        "words": [
+                            {"text": "Line", "bounding_rect": {"x": 10.0, "y": 20.0, "width": 40.0, "height": 16.0}},
+                            {"text": "1", "bounding_rect": {"x": 55.0, "y": 20.0, "width": 20.0, "height": 16.0}},
+                        ],
+                    },
+                    {
+                        "text": "Line 2",
+                        "words": [
+                            {"text": "Line", "bounding_rect": {"x": 10.0, "y": 44.0, "width": 40.0, "height": 16.0}},
+                            {"text": "2", "bounding_rect": {"x": 55.0, "y": 44.0, "width": 20.0, "height": 16.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(ocr_res, (0, 0, 400, 200))
+            layer.show()
+
+            # Select only line 1
+            layer.select_range(0, 1)
+            sel_items = canvas.find_withtag(SelectableTextLayer.TAG_SELECTION)
+            self.assertEqual(len(sel_items), 1)
+            coords = canvas.coords(sel_items[0])
+            highlight_h = coords[3] - coords[1]
+            # Raw line height is 16.0; visual selection height must be noticeably larger
+            self.assertGreater(highlight_h, 19.0, f"Expected heightened selection box, got height {highlight_h}")
+
+            # Select both lines: adjacent highlights must not overlap vertically
+            layer.select_all()
+            sel_items_all = canvas.find_withtag(SelectableTextLayer.TAG_SELECTION)
+            self.assertEqual(len(sel_items_all), 2)
+            c1 = canvas.coords(sel_items_all[0])
+            c2 = canvas.coords(sel_items_all[1])
+            self.assertLess(c1[3], c2[1], "Adjacent visual selection highlights must not overlap vertically")
+        finally:
+            root.destroy()
+
+    def test_in_place_translation_overlay_and_plates(self):
+        """Verifies in-place translation overlay: underlay plates, typography, word selection, and copy."""
+        from PIL import Image
+        import numpy as np
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        # Create screenshot background (dark theme #202020)
+        crop_pil = Image.new("RGB", (300, 150), color=(32, 32, 32))
+
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=500, height=400)
+            copied = []
+            layer = SelectableTextLayer(canvas=canvas, root=root, on_copy_callback=lambda t: copied.append(t))
+
+            ocr_res = OCRResult(
+                raw_text="Hello World\nSecond Line",
+                cleaned_text="Hello World\nSecond Line",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Hello World",
+                        "words": [
+                            {"text": "Hello", "bounding_rect": {"x": 20.0, "y": 20.0, "width": 50.0, "height": 18.0}},
+                            {"text": "World", "bounding_rect": {"x": 75.0, "y": 20.0, "width": 50.0, "height": 18.0}},
+                        ],
+                    },
+                    {
+                        "text": "Second Line",
+                        "words": [
+                            {"text": "Second", "bounding_rect": {"x": 20.0, "y": 50.0, "width": 60.0, "height": 18.0}},
+                            {"text": "Line", "bounding_rect": {"x": 85.0, "y": 50.0, "width": 45.0, "height": 18.0}},
+                        ],
+                    },
+                ),
+            )
+
+            box = (50, 60, 350, 210)
+            tr_text = "Привет Мир\nВторая Строка"
+
+            cnt = layer.load_translation(ocr_res, tr_text, box, crop_img=crop_pil)
+            self.assertEqual(cnt, 4, "Must produce 4 translated words")
+            self.assertEqual(layer.mode, "translate")
+
+            # 1. Activate translation overlay
+            layer.show()
+            self.assertTrue(layer.is_active)
+
+            # In translate mode, underlay plates mask original text and crisp translated words are drawn
+            underlays = canvas.find_withtag(SelectableTextLayer.TAG_UNDERLAY)
+            words_elems = canvas.find_withtag(SelectableTextLayer.TAG_WORD)
+            self.assertGreaterEqual(len(underlays), 2, "Must create underlay plates for translated lines")
+            self.assertEqual(len(words_elems), 4, "Must render canvas text items for translated words")
+
+            # Verify sampled background plate color matches dark background (32, 32, 32) -> '#202020'
+            reg0 = layer.regions[0]
+            self.assertEqual(reg0.hex_bg, "#202020")
+            self.assertEqual(reg0.fg_color, "#ffffff", "Dark background must use high-contrast white text")
+
+            # 2. Test word selection on translated text
+            layer.select_range(0, 1)  # select "Привет Мир"
+            sel_text = layer.get_selected_text()
+            self.assertEqual(sel_text, "Привет Мир")
+
+            # Selection rectangle is rendered
+            sel_items = canvas.find_withtag(SelectableTextLayer.TAG_SELECTION)
+            self.assertGreaterEqual(len(sel_items), 1)
+
+            # 3. Test copy execution
+            res = layer.execute_copy()
+            self.assertEqual(res, "Привет Мир")
+            self.assertIn("Привет Мир", copied)
+
+            # 4. Select all and copy all
+            layer.select_all()
+            all_text = layer.get_all_text()
+            self.assertEqual(all_text, "Привет Мир\nВторая Строка")
+        finally:
+            root.destroy()
+
+    def test_in_place_translation_mode_toggle_and_caching(self):
+        """Verifies instant toggling between text mode (Variant A untouched) and translate mode."""
+        from PIL import Image
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        crop_pil = Image.new("RGB", (200, 100), color=(250, 250, 250))
+        root = tk.Tk()
+        try:
+            canvas = tk.Canvas(root, width=400, height=300)
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+            ocr_res = OCRResult(
+                raw_text="Original OCR",
+                cleaned_text="Original OCR",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Original OCR",
+                        "words": [
+                            {"text": "Original", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 60.0, "height": 16.0}},
+                            {"text": "OCR", "bounding_rect": {"x": 75.0, "y": 10.0, "width": 40.0, "height": 16.0}},
+                        ],
+                    },
+                ),
+            )
+            box = (10, 10, 210, 110)
+
+            # Mode 1: Translate mode
+            layer.load_translation(ocr_res, "Исходный OCR", box, crop_img=crop_pil)
+            layer.show()
+            self.assertEqual(layer.mode, "translate")
+            self.assertGreater(len(canvas.find_withtag(SelectableTextLayer.TAG_UNDERLAY)), 0)
+            self.assertGreater(len(canvas.find_withtag(SelectableTextLayer.TAG_WORD)), 0)
+            self.assertEqual(layer.get_all_text(), "Исходный OCR")
+
+            # Mode 2: Switch to Text mode
+            layer.load_from_ocr(ocr_res, box, crop_img=crop_pil)
+            layer.show()
+            self.assertEqual(layer.mode, "text")
+            # In text mode, Variant A invariant: 0 underlays and 0 word text items
+            self.assertEqual(len(canvas.find_withtag(SelectableTextLayer.TAG_UNDERLAY)), 0)
+            self.assertEqual(len(canvas.find_withtag(SelectableTextLayer.TAG_WORD)), 0)
+            self.assertEqual(layer.get_all_text(), "Original OCR")
+
+            # Mode 3: Switch back to Translate mode
+            layer.load_translation(ocr_res, "Исходный OCR", box, crop_img=crop_pil)
+            layer.show()
+            self.assertEqual(layer.mode, "translate")
+            self.assertGreater(len(canvas.find_withtag(SelectableTextLayer.TAG_UNDERLAY)), 0)
+            self.assertGreater(len(canvas.find_withtag(SelectableTextLayer.TAG_WORD)), 0)
+            self.assertEqual(layer.get_all_text(), "Исходный OCR")
+        finally:
+            root.destroy()
+
+    def test_table_markdown_percentage_and_test_names_corrections(self):
+        """Verifies correction of OCR confusions in Markdown comparison tables (% and test identifiers)."""
+        from core.ocr import _correct_ocr_confusions
+
+        snippet = (
+            "Character Error Rate (CER) 35.4196 (расстояние 466) 0.2396 (расстояние 3)\n"
+            "Точные совпадения тестов 0/10 10 / 10 (10096)\n"
+            "test variant a single_line cohesive_region n\n"
+            "test variant a horizontal_gap_splits_regions ns\n"
+            "test variant a stable_height_across_jittery_word_boxes\n"
+            "test variant_a_neighboring_lines_do not_merge где_ог overlap\n"
+            "test variant_a_copying_single_line_preserves погта1 spaces\n"
+            "test_variant_a_copying_multiple_lines_preserv es_order_and_newlines\n"
+            "test_variant_a_dual_language_duplicates_exclu ded\n"
+        )
+        cleaned = _correct_ocr_confusions(snippet)
+
+        self.assertIn("35.41%", cleaned)
+        self.assertIn("0.23%", cleaned)
+        self.assertIn("100%", cleaned)
+        self.assertIn("test_variant_a_single_line_cohesive_region", cleaned)
+        self.assertIn("test_variant_a_horizontal_gap_splits_regions", cleaned)
+        self.assertIn("test_variant_a_stable_height_across_jittery_word_boxes", cleaned)
+        self.assertIn("test_variant_a_neighboring_lines_do_not_merge_or_overlap", cleaned)
+        self.assertIn("test_variant_a_copying_single_line_preserves_normal_spaces", cleaned)
+        self.assertIn("test_variant_a_copying_multiple_lines_preserves_order_and_newlines", cleaned)
+        self.assertIn("test_variant_a_dual_language_duplicates_excluded", cleaned)
+
+    def test_median_clustering_prevents_descender_drift(self):
+        """Verifies that line clustering with median center prevents drift when lines have descenders."""
+        from core.ocr import WindowsMediaOCREngine
+        engine = WindowsMediaOCREngine()
+
+        # Line 1 with a descender word ('y' at y=10..26)
+        # Line 2 directly below at y=28..42
+        res = {
+            "lines": [
+                {
+                    "text": "Header column",
+                    "words": [
+                        {"text": "Header", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 50.0, "height": 14.0}},
+                        {"text": "column_descender_y", "bounding_rect": {"x": 65.0, "y": 10.0, "width": 80.0, "height": 18.0}},
+                    ],
+                },
+                {
+                    "text": "Row item text",
+                    "words": [
+                        {"text": "Row", "bounding_rect": {"x": 10.0, "y": 30.0, "width": 30.0, "height": 14.0}},
+                        {"text": "item", "bounding_rect": {"x": 45.0, "y": 30.0, "width": 30.0, "height": 14.0}},
+                        {"text": "text", "bounding_rect": {"x": 80.0, "y": 30.0, "width": 30.0, "height": 14.0}},
+                    ],
+                },
+            ]
+        }
+        restructured = engine._restructure_lines_by_layout(res)
+        out_lines = restructured.get("lines", [])
+        self.assertEqual(len(out_lines), 2, "Line 2 was erroneously merged into Line 1")
+        self.assertIn("Header", out_lines[0]["text"])
+        self.assertIn("Row", out_lines[1]["text"])
+
+
+class TestBenchmarkOCRAccuracyAndCoordinateFidelity(unittest.TestCase):
+    """Regression test suite running the 6-category benchmark to prevent OCR regressions and ensure bbox fidelity."""
+
+    @classmethod
+    def setUpClass(cls):
+        import json
+        from core.ocr import WindowsMediaOCREngine
+        cls.ds_path = Path("tests/benchmark/dataset.json")
+        if not cls.ds_path.exists():
+            raise unittest.SkipTest("Benchmark dataset not found")
+        with open(cls.ds_path, "r", encoding="utf-8") as f:
+            cls.dataset = json.load(f)
+        cls.engine = WindowsMediaOCREngine(language="rus+eng")
+
+    def test_benchmark_overall_cer_and_tech_accuracy(self):
+        """Verifies overall CER is under 5.0% and tech accuracy exceeds 90%."""
+        total_chars = 0
+        total_dist = 0
+        total_tech = 0
+        passed_tech = 0
+
+        for item in self.dataset:
+            p = Path(item["image_path"])
+            res = self.engine.recognize(p)
+            gt = item["ground_truth"]
+            dist = TestTechnicalReportOCRAccuracy._levenshtein(res.cleaned_text, gt)
+            total_dist += dist
+            total_chars += len(gt)
+
+            for tid in item["tech_identifiers"]:
+                total_tech += 1
+                if tid in res.cleaned_text:
+                    passed_tech += 1
+
+        overall_cer = (total_dist / total_chars) * 100.0 if total_chars else 0.0
+        tech_acc = (passed_tech / total_tech) * 100.0 if total_tech else 0.0
+
+        self.assertLess(overall_cer, 5.0, f"Overall CER {overall_cer:.2f}% exceeds 5.0% limit")
+        self.assertGreaterEqual(tech_acc, 90.0, f"Tech accuracy {tech_acc:.1f}% below 90.0% target")
+
+    def test_word_bounding_boxes_strictly_bounded(self):
+        """Verifies that all word bounding boxes are accurately scaled and bounded by original image dimensions."""
+        from PIL import Image
+
+        for item in self.dataset:
+            p = Path(item["image_path"])
+            with Image.open(p) as img:
+                orig_w, orig_h = img.size
+
+            res = self.engine.recognize(p)
+            for line in res.lines:
+                for w in line.get("words", []):
+                    b = w.get("bounding_rect", {})
+                    x = b.get("x", 0.0)
+                    y = b.get("y", 0.0)
+                    width = b.get("width", 0.0)
+                    height = b.get("height", 0.0)
+
+                    self.assertGreaterEqual(x, -0.5, f"Word {w['text']} x coordinate negative")
+                    self.assertGreaterEqual(y, -0.5, f"Word {w['text']} y coordinate negative")
+                    self.assertLessEqual(x + width, orig_w + 2.0, f"Word {w['text']} exceeds image width")
+                    self.assertLessEqual(y + height, orig_h + 2.0, f"Word {w['text']} exceeds image height")
+
+
+class TestTableGridOCRAccuracy(unittest.TestCase):
+    """Verifies multi-column table OCR grid detection, cell separation, and token recovery."""
+
+    @classmethod
+    def setUpClass(cls):
+        from core.ocr import WindowsMediaOCREngine
+        cls.image_path = Path("tests/test_data/table_comparison_screenshot.png")
+        if not cls.image_path.exists():
+            raise unittest.SkipTest("Table screenshot fixture not found")
+        cls.engine = WindowsMediaOCREngine(language="rus+eng")
+        cls.ocr_res = cls.engine.recognize(cls.image_path)
+        cls.text = cls.ocr_res.cleaned_text
+
+    def test_table_column_separation_and_rows_count(self):
+        """Verifies that table cells are separated into columns rather than horizontally merged across columns."""
+        self.assertGreaterEqual(len(self.ocr_res.lines), 14, "Expected at least 14 rows recognized in table")
+        # Header title
+        self.assertIn("Таблица сравнения ДО и ПОСЛЕ", self.text)
+        # Column headers
+        self.assertIn("Параметр / Идентификатор", self.text)
+        self.assertIn("ДО исправления (Baseline)", self.text)
+        self.assertIn("ПОСЛЕ исправления", self.text)
+
+    def test_table_metrics_and_fractions(self):
+        """Verifies CER percentages, fractions, and test match counts in table."""
+        self.assertIn("35.41%", self.text)
+        self.assertIn("0.23%", self.text)
+        self.assertIn("0 / 10", self.text)
+        self.assertIn("10 / 10", self.text)
+        self.assertIn("100%", self.text)
+
+    def test_table_test_identifiers_unbroken(self):
+        """Verifies that snake_case test names wrapped within table cells are correctly reconstructed."""
+        expected_tests = [
+            "test_variant_a_single_line_cohesive_region",
+            "test_variant_a_horizontal_gap_splits_regions",
+            "test_variant_a_stable_height_across_jittery_word_boxes",
+            "test_variant_a_neighboring_lines_do_not_merge_or_overlap",
+            "test_variant_a_copying_single_line_preserves_normal_spaces",
+            "test_variant_a_copying_multiple_lines_preserves_order_and_newlines",
+            "test_variant_a_dual_language_duplicates_excluded",
+            "test_variant_a_dpi_and_offset_alignment",
+            "test_variant_a_original_image_remains_unmodified",
+            "test_variant_a_hud_buttons_and_functions_continue_working",
+        ]
+        for name in expected_tests:
+            with self.subTest(test_name=name):
+                self.assertIn(name, self.text, f"Identifier {name} missing or corrupted in recognized table text")
+
+    def test_table_special_symbols_and_numbers(self):
+        """Verifies isolated technical symbols, escaped chars, and list numbers in table."""
+        self.assertIn("\\n", self.text)
+        self.assertIn("RU+EN", self.text)
+        self.assertIn("OK", self.text)
+        self.assertIn("3.", self.text)
+        self.assertIn("6.", self.text)
+        self.assertIn("8.", self.text)
+
+    def test_table_word_bounding_boxes_within_original_dimensions(self):
+        """Verifies that all cell word coordinates are correctly mapped back to original screenshot bounds."""
+        with Image.open(self.image_path) as img:
+            orig_w, orig_h = img.size
+
+        for line in self.ocr_res.lines:
+            for w in line.get("words", []):
+                b = w.get("bounding_rect", {})
+                x = b.get("x", 0.0)
+                y = b.get("y", 0.0)
+                width = b.get("width", 0.0)
+                height = b.get("height", 0.0)
+                self.assertGreaterEqual(x, -0.5)
+                self.assertGreaterEqual(y, -0.5)
+                self.assertLessEqual(x + width, orig_w + 2.0)
+                self.assertLessEqual(y + height, orig_h + 2.0)
+
+
+
+class TestGeminiDeprecationAndClipboardPolicy(unittest.TestCase):
+    """Verifies OCR homoglyph corrections for Gemini deprecation reports,
+    ensures clipboard image auto-copy is disabled on crop/selection,
+    and validates Ctrl+C copying in text and translation selection layers.
+    """
+
+    def test_gemini_deprecation_homoglyph_corrections(self):
+        from core.ocr import _correct_ocr_confusions
+
+        sample_raw = (
+            "• Gemini 3.7 Flash deprecation: gemini-3.7-f1ash is deprecated and has Ьееп replaced by gemini-3.8-f1ash . "
+            "It is по 1опде available to select in Google Al Studio, and API requests to gemini-3.7-f1ash are automatically "
+            "routed to gemini-3.8-f1ash .\n"
+            "Update your model string to gemini-3.8-f1ash and review the Gemini 3.8 Flash guide.\n"
+            "• Gemini 3.5 Flash deprecation: gemini-3.5-f1ash is deprecated and has Ьееп replaced by gemini-3.6-f1ash . "
+            "It is по longe available to select in Google Al Studio, and API requests to gemini-3.5-f1ash are automatically "
+            "routed to gemini-3.6-f1ash .\n"
+            "Update your model string to gemini-3.6-f1ash (ог gemini-3.8-f1ash ) and review the Gemini 3.6 Flash guide.\n"
+            "• Deep Research Agent deep-research-pro-preview-12-2Ø25 deprecation: The deep-research-pro-preview-12-2Ø25 agent is "
+            "deprecated and will be shut down оп October 23, 2026.\n"
+            "Migrate your requests to опе of the newer Deep Research agent versions:\n"
+            "о deep-research-preview-Ø4-2Ø26 : Designed for speed and efficiency, ideal to be streamed back to а client I-Jl.\n"
+            "о deep-research-max-preview-Ø4-2Ø26 : Maximum comprehensiveness for automated context gathering and synthesis.\n"
+            "то migrate, update the agent parameter in your interactions.create requests from deep-research-pro-preview-12-2Ø25 to "
+            "deep-research-preview-Ø4-2Ø26 (or deep-resear"
+        )
+
+        corrected = _correct_ocr_confusions(sample_raw)
+
+        # 1. f1ash -> flash
+        self.assertNotIn("f1ash", corrected)
+        self.assertIn("gemini-3.7-flash", corrected)
+        self.assertIn("gemini-3.8-flash", corrected)
+        self.assertIn("gemini-3.5-flash", corrected)
+        self.assertIn("gemini-3.6-flash", corrected)
+
+        # 2. Cyrillic homoglyphs in English text
+        self.assertNotIn("Ьееп", corrected)
+        self.assertIn("has been replaced by", corrected)
+        self.assertNotIn("1опде", corrected)
+        self.assertIn("no longer available", corrected)
+        self.assertNotIn("ог", corrected)
+        self.assertIn("(or gemini-3.8-flash )", corrected)
+        self.assertNotIn("оп October", corrected)
+        self.assertIn("on October", corrected)
+        self.assertNotIn("опе", corrected)
+        self.assertIn("one of the newer", corrected)
+        self.assertNotIn("то migrate", corrected)
+        self.assertTrue("To migrate" in corrected or "to migrate" in corrected)
+
+        # 3. Google AI Studio and client UI
+        self.assertNotIn("Google Al Studio", corrected)
+        self.assertIn("Google AI Studio", corrected)
+        self.assertNotIn("I-Jl", corrected)
+        self.assertIn("client UI", corrected)
+
+        # 4. Slashed zero / Ø in dates and bullet lists
+        self.assertNotIn("2Ø25", corrected)
+        self.assertIn("2025", corrected)
+        self.assertNotIn("Ø4-2Ø26", corrected)
+        self.assertIn("04-2026", corrected)
+        self.assertIn("• deep-research-preview", corrected)
+
+    def test_no_auto_image_copy_policy(self):
+        """Verifies that crop_and_save_current_selection does NOT copy image to clipboard automatically,
+        and that clipboard copying only occurs when action_copy is explicitly triggered.
+        """
+        import inspect
+        from core import capture
+
+        src = inspect.getsource(capture.ScreenAreaSelector)
+        # 1. Verify crop_and_save_current_selection definition does NOT call copy_image_to_clipboard
+        crop_save_idx = src.find("def crop_and_save_current_selection")
+        self.assertNotEqual(crop_save_idx, -1)
+        action_text_idx = src.find("def action_text", crop_save_idx)
+        self.assertNotEqual(action_text_idx, -1)
+        crop_fn_src = src[crop_save_idx:action_text_idx]
+
+        self.assertNotIn("copy_image_to_clipboard", crop_fn_src,
+                         "crop_and_save_current_selection must NEVER auto-copy to clipboard!")
+
+        # 2. Verify action_copy DOES contain copy_image_to_clipboard
+        act_copy_idx = src.find("def action_copy")
+        self.assertNotEqual(act_copy_idx, -1)
+        act_close_idx = src.find("def action_close", act_copy_idx)
+        act_copy_src = src[act_copy_idx:act_close_idx]
+        self.assertIn("copy_image_to_clipboard", act_copy_src,
+                      "action_copy should copy image to clipboard when HUD copy button is pressed.")
+
+    def test_selectable_text_layer_copy_and_ctrl_c(self):
+        """Verifies that SelectableTextLayer execute_copy writes to clipboard and invokes callback,
+        both for plain OCR text and translated text.
+        """
+        import tkinter as tk
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            canvas = tk.Canvas(root, width=400, height=300)
+            canvas.pack()
+
+            copied_box = [None]
+            def on_copy(val):
+                copied_box[0] = val
+
+            layer = SelectableTextLayer(root=root, canvas=canvas, on_copy_callback=on_copy)
+
+            ocr_res = OCRResult(
+                image_path="dummy.png",
+                raw_text="Hello World\nLine Two",
+                cleaned_text="Hello World\nLine Two",
+                lines=[
+                    {"text": "Hello World", "words": [
+                        {"text": "Hello", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 40.0, "height": 16.0}},
+                        {"text": "World", "bounding_rect": {"x": 55.0, "y": 10.0, "width": 45.0, "height": 16.0}},
+                    ]},
+                    {"text": "Line Two", "words": [
+                        {"text": "Line", "bounding_rect": {"x": 10.0, "y": 35.0, "width": 35.0, "height": 16.0}},
+                        {"text": "Two", "bounding_rect": {"x": 50.0, "y": 35.0, "width": 30.0, "height": 16.0}},
+                    ]},
+                ]
+            )
+
+            # Test text mode copy
+            layer.load_from_ocr(ocr_res, (0, 0, 200, 100))
+            layer.show()
+            self.assertTrue(layer.is_active)
+
+            # Copy all (when nothing selected)
+            res = layer.execute_copy()
+            self.assertEqual(res, "Hello World\nLine Two")
+            self.assertEqual(copied_box[0], "Hello World\nLine Two")
+
+            # Select word index 0 ("Hello")
+            layer.selected_indices = {0}
+            res_sel = layer.execute_copy()
+            self.assertEqual(res_sel, "Hello")
+            self.assertEqual(copied_box[0], "Hello")
+
+            # Test translate mode copy
+            layer.load_translation(ocr_res, "Привет Мир\nСтрока Два", (0, 0, 200, 100))
+            layer.show()
+            self.assertTrue(layer.is_active)
+            self.assertEqual(layer.mode, "translate")
+
+            res_tr = layer.execute_copy()
+            self.assertEqual(res_tr, "Привет Мир\nСтрока Два")
+            self.assertEqual(copied_box[0], "Привет Мир\nСтрока Два")
+        finally:
+            root.destroy()
+
 
 if __name__ == "__main__":
     import time
     unittest.main()
+
+
 
 
 

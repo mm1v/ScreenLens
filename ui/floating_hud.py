@@ -286,10 +286,15 @@ def render_pill_badge(text: str, h: int = 22) -> tuple[ImageTk.PhotoImage, int, 
     return ImageTk.PhotoImage(img), w, h
 
 
-def calc_pill_width(text: str, min_w: int = 76, pad: int = 24) -> int:
-    """Calculates compact width for stadium pill button based on text length."""
-    char_w = 7.5
-    return max(min_w, int(len(text) * char_w + pad))
+def calc_pill_width(text: str, min_w: int = 84, pad: int = 28, font_spec: tuple = ("Segoe UI", 9, "bold")) -> int:
+    """Calculates generous, anti-clipping width for stadium pill button using font metrics."""
+    try:
+        from tkinter import font as tkfont
+        f = tkfont.Font(family=font_spec[0], size=font_spec[1], weight=font_spec[2] if len(font_spec) > 2 else "normal")
+        measured = f.measure(text)
+    except Exception:
+        measured = int(len(text) * 8.0)
+    return max(min_w, measured + pad)
 
 
 def create_rounded_card(
@@ -447,22 +452,22 @@ class RoundedCardController:
 
 
 class CapsuleButton(tk.Canvas):
-    """Stadium capsule button (border-radius: 9999px) with PIL anti-aliasing and hover states."""
+    """Material 3 Expressive stadium capsule button (shape.corner.full) with 4x supersampled anti-aliasing."""
 
     def __init__(
         self,
         parent: tk.Misc,
         text: str,
         command: Optional[Callable[[], None]] = None,
-        style: str = "primary",  # "primary", "secondary", "danger"
+        style: str = "primary",  # "primary", "secondary", "tonal", "danger", "success"
         card_bg: str = "#222428",
         width: Optional[int] = None,
-        height: int = 30,
-        font: tuple = ("Segoe UI", 8, "bold"),
+        height: int = 32,
+        font: tuple = ("Segoe UI", 9, "bold"),
         **kwargs,
     ) -> None:
         if width is None:
-            width = calc_pill_width(text)
+            width = calc_pill_width(text, min_w=84, pad=28, font_spec=font)
 
         super().__init__(
             parent,
@@ -478,53 +483,92 @@ class CapsuleButton(tk.Canvas):
         self.text_label = text
         self.w = width
         self.h = height
+        self.font = font
+        self.style = style
+        self._is_pressed = False
 
+        # Material 3 Expressive color tokens
         if style == "primary":
             fill_norm = (255, 255, 255, 255)
-            fill_hov = (226, 228, 232, 255)
+            fill_hov = (226, 230, 238, 255)
+            fill_press = (200, 206, 218, 255)
             out_norm = (255, 255, 255, 255)
             fg_norm = "#121212"
         elif style == "danger":
-            fill_norm = (58, 28, 28, 255)
-            fill_hov = (78, 34, 34, 255)
-            out_norm = (140, 40, 40, 255)
+            fill_norm = (60, 26, 26, 255)
+            fill_hov = (82, 32, 32, 255)
+            fill_press = (46, 20, 20, 255)
+            out_norm = (145, 42, 42, 255)
             fg_norm = "#ff5252"
-        else:  # secondary
-            fill_norm = (50, 52, 56, 255)
-            fill_hov = (62, 65, 71, 255)
-            out_norm = (75, 79, 86, 255)
+        elif style == "success":
+            fill_norm = (22, 58, 38, 255)
+            fill_hov = (30, 78, 50, 255)
+            fill_press = (16, 46, 30, 255)
+            out_norm = (40, 140, 80, 255)
+            fg_norm = "#00e676"
+        else:  # secondary / tonal
+            fill_norm = (50, 53, 60, 255)
+            fill_hov = (64, 68, 77, 255)
+            fill_press = (40, 43, 49, 255)
+            out_norm = (75, 80, 90, 255)
             fg_norm = "#ffffff"
 
-        self._img_normal = ImageTk.PhotoImage(render_capsule_image(width, height, fill_norm, out_norm))
-        self._img_hover = ImageTk.PhotoImage(render_capsule_image(width, height, fill_hov, out_norm))
+        self._img_normal = ImageTk.PhotoImage(render_capsule_image(width, height, fill_norm, out_norm, outline_width=1.0))
+        self._img_hover = ImageTk.PhotoImage(render_capsule_image(width, height, fill_hov, out_norm, outline_width=1.0))
+        self._img_pressed = ImageTk.PhotoImage(render_capsule_image(width, height, fill_press, out_norm, outline_width=1.0))
 
         self.img_id = self.create_image(0, 0, image=self._img_normal, anchor=tk.NW)
         self.txt_id = self.create_text(width // 2, height // 2, text=text, fill=fg_norm, font=font)
 
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
-        self.bind("<Button-1>", self._on_click)
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
 
         self.tag_bind(self.img_id, "<Enter>", self._on_enter)
         self.tag_bind(self.img_id, "<Leave>", self._on_leave)
-        self.tag_bind(self.img_id, "<Button-1>", self._on_click)
+        self.tag_bind(self.img_id, "<ButtonPress-1>", self._on_press)
+        self.tag_bind(self.img_id, "<ButtonRelease-1>", self._on_release)
 
         self.tag_bind(self.txt_id, "<Enter>", self._on_enter)
         self.tag_bind(self.txt_id, "<Leave>", self._on_leave)
-        self.tag_bind(self.txt_id, "<Button-1>", self._on_click)
+        self.tag_bind(self.txt_id, "<ButtonPress-1>", self._on_press)
+        self.tag_bind(self.txt_id, "<ButtonRelease-1>", self._on_release)
 
     def _on_enter(self, _event: Optional[tk.Event] = None) -> None:
-        self.itemconfig(self.img_id, image=self._img_hover)
+        if not self._is_pressed:
+            self.itemconfig(self.img_id, image=self._img_hover)
 
     def _on_leave(self, _event: Optional[tk.Event] = None) -> None:
+        self._is_pressed = False
         self.itemconfig(self.img_id, image=self._img_normal)
+
+    def _on_press(self, _event: Optional[tk.Event] = None) -> None:
+        self._is_pressed = True
+        self.itemconfig(self.img_id, image=self._img_pressed)
 
     def _on_click(self, _event: Optional[tk.Event] = None) -> None:
         if self.command:
             self.command()
 
+    def _on_release(self, event: Optional[tk.Event] = None) -> None:
+        if self._is_pressed:
+            self._is_pressed = False
+            self.itemconfig(self.img_id, image=self._img_hover)
+            self._on_click(event)
+
     def set_text(self, new_text: str) -> None:
+        self.text_label = new_text
         self.itemconfig(self.txt_id, text=new_text)
+
+    def config(self, **kwargs) -> None:
+        if "text" in kwargs:
+            self.set_text(kwargs.pop("text"))
+        if kwargs:
+            super().config(**kwargs)
+
+    def configure(self, **kwargs) -> None:
+        self.config(**kwargs)
 
 
 class RoundedCard(tk.Canvas):
@@ -567,27 +611,43 @@ class RoundedCard(tk.Canvas):
         self.create_window(18, 14, window=self.content_frame, anchor=tk.NW, width=width - 36, height=height - 28)
 
 
+class HUDButtonInfo:
+    """Descriptor for an interactive button in GoogleLensHUD."""
+
+    def __init__(self, key: str, label: str, cx: int, cy: int, width: int = 60, height: int = 50) -> None:
+        self.key = key
+        self.label = label
+        self.cx = cx
+        self.cy = cy
+        self.width = width
+        self.height = height
+
+
 class GoogleLensHUD:
     """Material Design 3 / Google Lens dual capsule HUD with generous padding and active mode accent pill."""
 
     def __init__(
         self,
-        parent: tk.Canvas,
-        on_text: Callable[[], None],
-        on_translate: Callable[[], None],
-        on_lens: Callable[[], None],
-        on_ai: Callable[[], None],
-        on_copy: Callable[[], None],
-        on_close: Callable[[], None],
+        parent: Optional[tk.Canvas] = None,
+        on_text: Optional[Callable[[], None]] = None,
+        on_translate: Optional[Callable[[], None]] = None,
+        on_lens: Optional[Callable[[], None]] = None,
+        on_ai: Optional[Callable[[], None]] = None,
+        on_copy: Optional[Callable[[], None]] = None,
+        on_close: Optional[Callable[[], None]] = None,
         ai_enabled: bool = True,
+        canvas: Optional[tk.Canvas] = None,
+        root: Optional[tk.Misc] = None,
+        **kwargs,
     ) -> None:
-        self.canvas = parent
-        self.on_text = on_text
-        self.on_translate = on_translate
-        self.on_lens = on_lens
-        self.on_ai = on_ai
-        self.on_copy = on_copy
-        self.on_close = on_close
+        self.canvas = parent if parent is not None else canvas
+        self.root = root
+        self.on_text = on_text or (lambda: None)
+        self.on_translate = on_translate or (lambda: None)
+        self.on_lens = on_lens or (lambda: None)
+        self.on_ai = on_ai or (lambda: None)
+        self.on_copy = on_copy or (lambda: None)
+        self.on_close = on_close or (lambda: None)
         self.ai_enabled = ai_enabled
 
         # Configure Block 1 items depending on whether AI mode is enabled in settings
@@ -605,8 +665,9 @@ class GoogleLensHUD:
         self.b1_w = self.side_pad + len(self.b1_items) * self.w_b1_item + self.side_pad
         self.b1_h = 58
 
-        self.w_b2_item = 72
-        self.b2_w = self.side_pad + 2 * self.w_b2_item + self.side_pad  # 160px
+        self.w_copy = 76
+        self.w_close = 68
+        self.b2_w = self.side_pad + self.w_copy + self.w_close + self.side_pad  # exactly 160px
         self.b2_h = 58
         self.gap = 10
 
@@ -623,22 +684,93 @@ class GoogleLensHUD:
         }
 
         # Medium gray outer capsule background (Google Lens reference)
-        cap_fill = (64, 66, 71, 248)
-        cap_outline = (82, 85, 92, 255)
+        cap_fill = (44, 46, 52, 248)
+        cap_outline = (72, 75, 84, 255)
         cap1_img = render_capsule_image(self.b1_w, self.b1_h, fill=cap_fill, outline=cap_outline, outline_width=1.0)
         cap2_img = render_capsule_image(self.b2_w, self.b2_h, fill=cap_fill, outline=cap_outline, outline_width=1.0)
         self._cap1_photo = ImageTk.PhotoImage(cap1_img)
         self._cap2_photo = ImageTk.PhotoImage(cap2_img)
 
-        # Active mode accent pill: darker charcoal gray (RGB 31, 31, 31 from screenshot)
-        act_img = render_capsule_image(60, 48, fill=(31, 31, 31, 255), outline=(50, 52, 58, 255), outline_width=1.0)
-        self._act_pill_photo = ImageTk.PhotoImage(act_img)
+        # Material 3 Expressive convex stadium capsule configurations per item
+        # Stadium capsules (shape.corner.full) with radius = height // 2, matching outer block curvature
+        self._act_pill_photos: dict[str, ImageTk.PhotoImage] = {}
+        self._hov_pill_photos: dict[str, ImageTk.PhotoImage] = {}
 
-        # Pre-render hover pill highlights
-        hov_norm_img = render_capsule_image(58, 46, fill=(52, 54, 60, 200), outline=(72, 75, 82, 255), outline_width=1.0)
-        hov_danger_img = render_capsule_image(70, 46, fill=(68, 28, 28, 240), outline=(130, 42, 42, 255), outline_width=1.0)
-        self._hov_norm_photo = ImageTk.PhotoImage(hov_norm_img)
-        self._hov_danger_photo = ImageTk.PhotoImage(hov_danger_img)
+        # Colors according to Material 3 Expressive Dark
+        act_fill = (26, 28, 32, 255)          # High-contrast active container (charcoal)
+        act_outline = (96, 102, 116, 255)     # M3 active border
+        hov_fill = (54, 57, 65, 210)          # State layer hover
+        hov_outline = (80, 85, 96, 255)
+        danger_hov_fill = (75, 28, 28, 235)   # M3 error container hover
+        danger_hov_outline = (150, 48, 48, 255)
+
+        # Pill dimensions per button key: (width, height=50)
+        # Stadium capsules matching outer container curvature and with 4px equal padding to the outer edges
+        pill_dims = {
+            "text": (64, 50),
+            "translate": (62, 50),
+            "ai": (56, 50),
+            "lens": (64, 50),
+            "copy": (74, 50),
+            "close": (70, 50),
+        }
+
+        for k, (pw, ph) in pill_dims.items():
+            act_im = render_capsule_image(pw, ph, fill=act_fill, outline=act_outline, outline_width=1.0)
+            self._act_pill_photos[k] = ImageTk.PhotoImage(act_im)
+
+            if k == "close":
+                hov_im = render_capsule_image(pw, ph, fill=danger_hov_fill, outline=danger_hov_outline, outline_width=1.0)
+            else:
+                hov_im = render_capsule_image(pw, ph, fill=hov_fill, outline=hov_outline, outline_width=1.0)
+            self._hov_pill_photos[k] = ImageTk.PhotoImage(hov_im)
+
+        # Backwards-compatible single photo attributes
+        self._act_pill_photo = self._act_pill_photos.get("translate", next(iter(self._act_pill_photos.values())))
+        self._hov_norm_photo = self._hov_pill_photos.get("text", next(iter(self._hov_pill_photos.values())))
+        self._hov_danger_photo = self._hov_pill_photos.get("close", next(iter(self._hov_pill_photos.values())))
+
+        self.buttons: list[HUDButtonInfo] = []
+        self._update_buttons_list()
+
+    def _get_item_layout(self, key: str) -> tuple[int, int]:
+        """Returns horizontal center offset from block start and pill width for a given button key."""
+        if len(self.b1_items) == 4:
+            layout_b1 = {
+                "text": (36, 64),
+                "translate": (105, 62),
+                "ai": (170, 56),
+                "lens": (236, 64),
+            }
+        else:
+            layout_b1 = {
+                "text": (36, 64),
+                "translate": (104, 62),
+                "lens": (172, 64),
+            }
+        layout_b2 = {
+            "copy": (41, 74),
+            "close": (121, 70),
+        }
+        if key in layout_b1:
+            return layout_b1[key]
+        return layout_b2.get(key, (36, 60))
+
+    def _update_buttons_list(self) -> None:
+        """Updates list of HUDButtonInfo descriptors with absolute button centers."""
+        btns: list[HUDButtonInfo] = []
+        cy1 = self.y + self.b1_h // 2
+        for key, label in self.b1_items:
+            cx_off, pw = self._get_item_layout(key)
+            btns.append(HUDButtonInfo(key, label, self.x + cx_off, cy1, width=pw, height=50))
+
+        bx2 = self.x + self.b1_w + self.gap
+        cy2 = self.y + self.b2_h // 2
+        cx_off_copy, pw_copy = self._get_item_layout("copy")
+        btns.append(HUDButtonInfo("copy", "Копировать", bx2 + cx_off_copy, cy2, width=pw_copy, height=50))
+        cx_off_close, pw_close = self._get_item_layout("close")
+        btns.append(HUDButtonInfo("close", "Закрыть", bx2 + cx_off_close, cy2, width=pw_close, height=50))
+        self.buttons = btns
 
     def get_dimensions(self) -> tuple[int, int]:
         """Returns total width and height of the dual capsule HUD."""
@@ -658,6 +790,15 @@ class GoogleLensHUD:
         if self.is_visible:
             self.draw(self.x, self.y)
 
+    def place_at(self, x: int, y: int) -> None:
+        """Places HUD at given coordinates (alias for draw)."""
+        self.draw(x, y)
+
+    def show(self) -> None:
+        """Shows HUD at current coordinates."""
+        if not self.is_visible:
+            self.draw(self.x, self.y)
+
     def draw(self, x: int, y: int) -> None:
         """Renders or moves the two side-by-side capsules on the Canvas."""
         self.x = x
@@ -666,54 +807,64 @@ class GoogleLensHUD:
         self.canvas.delete("lens_hud_hover")
 
         # 1. Block 1: Actions (configured dynamically according to ai_enabled)
-        self.canvas.create_image(x, y, image=self._cap1_photo, anchor=tk.NW, tags="lens_hud")
+        self.canvas.create_image(x, y, image=self._cap1_photo, anchor=tk.NW, tags=("lens_hud", "lens_hud_bg"))
 
-        for i, (key, label) in enumerate(self.b1_items):
-            cx = x + self.side_pad + int((i + 0.5) * self.w_b1_item)
+        for key, label in self.b1_items:
+            cx_off, _ = self._get_item_layout(key)
+            cx = x + cx_off
 
             # Draw active mode accent pill behind the selected button only when active
             if self.active_mode and key == self.active_mode:
-                self.canvas.create_image(cx, y + self.b1_h // 2, image=self._act_pill_photo, tags="lens_hud")
+                self.canvas.create_image(cx, y + self.b1_h // 2, image=self._act_pill_photos.get(key, self._act_pill_photo), tags=("lens_hud", "lens_hud_act"))
 
-            self.canvas.create_image(cx, y + 18, image=self._photo_icons[key], tags="lens_hud")
+            self.canvas.create_image(cx, y + 18, image=self._photo_icons[key], tags=("lens_hud", "lens_hud_fg"))
             self.canvas.create_text(
                 cx,
-                y + 41,
+                y + 40,
                 text=label,
                 fill="#ffffff",
                 font=("Segoe UI", 8, "bold"),
-                tags="lens_hud",
+                tags=("lens_hud", "lens_hud_fg"),
             )
 
         # 2. Block 2: Management (Копировать, Закрыть)
         bx2 = x + self.b1_w + self.gap
-        self.canvas.create_image(bx2, y, image=self._cap2_photo, anchor=tk.NW, tags="lens_hud")
+        self.canvas.create_image(bx2, y, image=self._cap2_photo, anchor=tk.NW, tags=("lens_hud", "lens_hud_bg"))
 
         # Copy
-        cx_copy = bx2 + self.side_pad + int(0.5 * self.w_b2_item)
-        self.canvas.create_image(cx_copy, y + 18, image=self._photo_icons["copy"], tags="lens_hud")
+        cx_off_copy, _ = self._get_item_layout("copy")
+        cx_copy = bx2 + cx_off_copy
+        if self.active_mode and self.active_mode == "copy":
+            self.canvas.create_image(cx_copy, y + self.b2_h // 2, image=self._act_pill_photos.get("copy", self._act_pill_photo), tags=("lens_hud", "lens_hud_act"))
+
+        self.canvas.create_image(cx_copy, y + 18, image=self._photo_icons["copy"], tags=("lens_hud", "lens_hud_fg"))
         self.canvas.create_text(
             cx_copy,
-            y + 41,
+            y + 40,
             text="Копировать",
             fill="#ffffff",
-            font=("Segoe UI", 8, "bold"),
-            tags="lens_hud",
+            font=("Segoe UI", 7, "bold"),
+            tags=("lens_hud", "lens_hud_fg"),
         )
 
         # Close — DANGER RED
-        cx_close = bx2 + self.side_pad + int(1.5 * self.w_b2_item)
-        self.canvas.create_image(cx_close, y + 18, image=self._photo_icons["close"], tags="lens_hud")
+        cx_off_close, _ = self._get_item_layout("close")
+        cx_close = bx2 + cx_off_close
+        if self.active_mode and self.active_mode == "close":
+            self.canvas.create_image(cx_close, y + self.b2_h // 2, image=self._act_pill_photos.get("close", self._act_pill_photo), tags=("lens_hud", "lens_hud_act"))
+
+        self.canvas.create_image(cx_close, y + 18, image=self._photo_icons["close"], tags=("lens_hud", "lens_hud_fg"))
         self.canvas.create_text(
             cx_close,
-            y + 41,
+            y + 40,
             text="Закрыть",
             fill="#ff5252",
             font=("Segoe UI", 8, "bold"),
-            tags="lens_hud",
+            tags=("lens_hud", "lens_hud_fg"),
         )
 
         self.is_visible = True
+        self._update_buttons_list()
 
     def hide(self) -> None:
         """Hides HUD from canvas."""
@@ -743,23 +894,33 @@ class GoogleLensHUD:
 
         # Check Block 1
         if self.x <= mx <= self.x + self.b1_w and self.y <= my <= self.y + self.b1_h:
-            if mx < self.x + self.side_pad or mx > self.x + self.b1_w - self.side_pad:
-                return "bg"
-            idx = int((mx - (self.x + self.side_pad)) // self.w_b1_item)
-            keys = [k for k, _ in self.b1_items]
-            if 0 <= idx < len(keys):
-                return keys[idx]
+            rel_x = mx - self.x
+            if len(self.b1_items) == 4:
+                if rel_x < 71:
+                    return "text"
+                elif rel_x < 139:
+                    return "translate"
+                elif rel_x < 201:
+                    return "ai"
+                elif rel_x <= self.b1_w:
+                    return "lens"
+            else:
+                if rel_x < 71:
+                    return "text"
+                elif rel_x < 138:
+                    return "translate"
+                elif rel_x <= self.b1_w:
+                    return "lens"
             return "bg"
 
         # Check Block 2
         bx2 = self.x + self.b1_w + self.gap
         if bx2 <= mx <= bx2 + self.b2_w and self.y <= my <= self.y + self.b2_h:
-            if mx < bx2 + self.side_pad or mx > bx2 + self.b2_w - self.side_pad:
-                return "bg"
-            idx = int((mx - (bx2 + self.side_pad)) // self.w_b2_item)
-            keys = ["copy", "close"]
-            if 0 <= idx < len(keys):
-                return keys[idx]
+            rel_x = mx - bx2
+            if rel_x < 82:
+                return "copy"
+            elif rel_x <= self.b2_w:
+                return "close"
             return "bg"
 
         return None
@@ -783,23 +944,20 @@ class GoogleLensHUD:
         # Render hover highlight pill behind the item
         keys_b1 = [k for k, _ in self.b1_items]
         if target in keys_b1:
-            idx = keys_b1.index(target)
-            cx = self.x + self.side_pad + int((idx + 0.5) * self.w_b1_item)
+            cx_off, _ = self._get_item_layout(target)
+            cx = self.x + cx_off
             cy = self.y + self.b1_h // 2
-            self.canvas.create_image(cx, cy, image=self._hov_norm_photo, tags="lens_hud_hover")
-            self.canvas.tag_lower("lens_hud_hover", "lens_hud")
-        elif target == "copy":
+            hov_photo = self._hov_pill_photos.get(target, self._hov_norm_photo)
+            self.canvas.create_image(cx, cy, image=hov_photo, tags=("lens_hud_hover", "lens_hud"))
+            self.canvas.tag_lower("lens_hud_hover", "lens_hud_fg")
+        elif target in ("copy", "close"):
             bx2 = self.x + self.b1_w + self.gap
-            cx = bx2 + self.side_pad + int(0.5 * self.w_b2_item)
+            cx_off, _ = self._get_item_layout(target)
+            cx = bx2 + cx_off
             cy = self.y + self.b2_h // 2
-            self.canvas.create_image(cx, cy, image=self._hov_norm_photo, tags="lens_hud_hover")
-            self.canvas.tag_lower("lens_hud_hover", "lens_hud")
-        elif target == "close":
-            bx2 = self.x + self.b1_w + self.gap
-            cx = bx2 + self.side_pad + int(1.5 * self.w_b2_item)
-            cy = self.y + self.b2_h // 2
-            self.canvas.create_image(cx, cy, image=self._hov_danger_photo, tags="lens_hud_hover")
-            self.canvas.tag_lower("lens_hud_hover", "lens_hud")
+            hov_photo = self._hov_pill_photos.get(target, self._hov_norm_photo)
+            self.canvas.create_image(cx, cy, image=hov_photo, tags=("lens_hud_hover", "lens_hud"))
+            self.canvas.tag_lower("lens_hud_hover", "lens_hud_fg")
 
     def clear_hover(self) -> None:
         """Removes hover highlight."""

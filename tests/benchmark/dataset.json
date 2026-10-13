@@ -1,0 +1,102 @@
+[
+  {
+    "id": "1_terminal_git",
+    "category": "terminal_git",
+    "description": "Terminal git log with commit hashes, branch, underscores, plus sign, brackets",
+    "image_path": "D:\\Python\\GLens\\tests\\benchmark\\images\\1_terminal_git.png",
+    "ground_truth": "b8a9c0d git commit -m \"fix(core): update _merge_dual_language_structured()\"\n* 3a0f12c feat(hud): add + button for zoom_in [100% done]\nStatus: 0 errors, 3 warnings in branch feat/ocr_v2",
+    "tech_identifiers": [
+      "b8a9c0d",
+      "_merge_dual_language_structured",
+      "3a0f12c",
+      "+",
+      "100%",
+      "0",
+      "3",
+      "feat/ocr_v2"
+    ]
+  },
+  {
+    "id": "2_tech_report_table",
+    "category": "tech_report_table",
+    "description": "Technical report with comparison table, percentages, zeroes, and test names",
+    "image_path": "D:\\Python\\GLens\\tests\\benchmark\\images\\2_tech_report_table.png",
+    "ground_truth": "Таблица сравнения ДО и ПОСЛЕ:\nCharacter Error Rate (CER): 0.23% (расстояние 3) vs 35.41% (расстояние 466)\nТочные совпадения тестов: 10 / 10 (100%)\n1. test_variant_a_single_line_cohesive_region — OK (0.12s)\n2. test_variant_a_horizontal_gap_splits_regions — OK (0.05s)\n3. test_variant_a_stable_height_across_jittery_word_boxes — OK (0.08s)",
+    "tech_identifiers": [
+      "0.23%",
+      "35.41%",
+      "10 / 10",
+      "100%",
+      "test_variant_a_single_line_cohesive_region",
+      "test_variant_a_horizontal_gap_splits_regions",
+      "test_variant_a_stable_height_across_jittery_word_boxes",
+      "0.12s",
+      "0.05s",
+      "0.08s"
+    ]
+  },
+  {
+    "id": "3_low_contrast_dark",
+    "category": "low_contrast_dark",
+    "description": "Low-contrast IDE dark theme status logs with gray text",
+    "image_path": "D:\\Python\\GLens\\tests\\benchmark\\images\\3_low_contrast_dark.png",
+    "ground_truth": "2026-10-13 14:02:59 [INFO] worker_thread_0 initialized\nDEBUG: memory_usage = 48.5 MB, cache_hit_ratio = 98.2%\nTODO: refactor _normalize_intra_word_homoglyphs() before release",
+    "tech_identifiers": [
+      "2026-10-13",
+      "[INFO]",
+      "worker_thread_0",
+      "48.5",
+      "98.2%",
+      "_normalize_intra_word_homoglyphs"
+    ]
+  },
+  {
+    "id": "4_low_contrast_light",
+    "category": "low_contrast_light",
+    "description": "Low-contrast light theme secondary metadata with pale gray text",
+    "image_path": "D:\\Python\\GLens\\tests\\benchmark\\images\\4_low_contrast_light.png",
+    "ground_truth": "ID: #8042 | Версия: v2.4.0 (сборка 1030)\nСтатус: Завершено успешно (+100% квоты)\nПримечание: 0 из 3 запросов заблокировано",
+    "tech_identifiers": [
+      "#8042",
+      "v2.4.0",
+      "1030",
+      "+100%",
+      "0",
+      "3"
+    ]
+  },
+  {
+    "id": "5_ui_icons_small",
+    "category": "ui_icons_small",
+    "description": "Small UI text with file icons and badges alongside lines",
+    "image_path": "D:\\Python\\GLens\\tests\\benchmark\\images\\5_ui_icons_small.png",
+    "ground_truth": "main.py (140 строк, 0 предупреждений)\nsettings_window.py (изменено +5 строк)\ndatabase_v2.db (размер: 512 КБ, квота 50%)",
+    "tech_identifiers": [
+      "main.py",
+      "0",
+      "settings_window.py",
+      "+5",
+      "database_v2.db",
+      "50%"
+    ]
+  },
+  {
+    "id": "6_code_symbols_math",
+    "category": "code_symbols_math",
+    "description": "Code snippet with math brackets, plus, equals, type arrows and zeroes",
+    "image_path": "D:\\Python\\GLens\\tests\\benchmark\\images\\6_code_symbols_math.png",
+    "ground_truth": "def calculate_offset(x: int, y: int = 0) -> float:\n    ratio = (x + 10) / [y * 2.5] if y != 0 else 0.0\n    return ratio * 100.0  # +0.5% tolerance",
+    "tech_identifiers": [
+      "calculate_offset",
+      "x: int",
+      "y: int = 0",
+      "-> float:",
+      "(x + 10)",
+      "[y * 2.5]",
+      "!= 0",
+      "0.0",
+      "100.0",
+      "+0.5%"
+    ]
+  }
+]
