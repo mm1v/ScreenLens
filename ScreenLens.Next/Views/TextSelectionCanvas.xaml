@@ -1,0 +1,43 @@
+<UserControl x:Class="ScreenLens.Next.Views.TextSelectionCanvas"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" 
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008" 
+             mc:Ignorable="d" 
+             Focusable="True"
+             Background="Transparent">
+    <Grid x:Name="RootGrid" ClipToBounds="True">
+        <!-- Interactive overlay canvas for word highlights -->
+        <Canvas x:Name="WordHighlightsCanvas" IsHitTestVisible="False"/>
+
+        <!-- Drag selection rubber band -->
+        <Canvas x:Name="SelectionRubberCanvas" IsHitTestVisible="False">
+            <Rectangle x:Name="RubberBandRect"
+                       Fill="#2200E5FF"
+                       Stroke="#00E5FF"
+                       StrokeThickness="1"
+                       StrokeDashArray="2,2"
+                       Visibility="Collapsed"/>
+        </Canvas>
+
+        <!-- Floating copy pill above/below selected text -->
+        <Canvas x:Name="PopupCanvas" IsHitTestVisible="True">
+            <Border x:Name="SelectionActionPill"
+                    Visibility="Collapsed"
+                    Background="#181C26"
+                    BorderBrush="#00E5FF"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="6,3"
+                    Cursor="Hand">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="8" ShadowDepth="2" Opacity="0.4"/>
+                </Border.Effect>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="📋" FontSize="11" Margin="0,0,4,0"/>
+                    <TextBlock x:Name="PillText" Text="Скопировать" Foreground="#00E5FF" FontSize="10" FontWeight="Bold"/>
+                </StackPanel>
+            </Border>
+        </Canvas>
+    </Grid>
+</UserControl>

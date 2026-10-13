@@ -92,3 +92,11 @@ $RECYCLE.BIN/
 *.jpeg
 !assets/*.png
 !assets/*.ico
+
+# .NET / Visual Studio
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
