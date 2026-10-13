@@ -1,136 +1,93 @@
-# 🔍 ScreenLens (v0.0.2 Desktop Edition)
+# 🔍 ScreenLens.Next (.NET 8 / WPF Edition)
 
-[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
+[![.NET 8.0](https://img.shields.io/badge/.NET-8.0-blue.svg)](https://dotnet.microsoft.com/)
+[![WPF](https://img.shields.io/badge/GUI-WPF%20XAML-512BD4.svg)](https://learn.microsoft.com/dotnet/desktop/wpf/)
 [![Platform Windows](https://img.shields.io/badge/Platform-Windows%2010%20%2F%2011-0078D6.svg)](https://www.microsoft.com/)
 [![License MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![OCR Dual Engine](https://img.shields.io/badge/OCR-Windows%20Media%20%2B%20Tesseract-orange.svg)](#)
-[![AI Gemini 3.5 Flash Lite](https://img.shields.io/badge/AI-Google%20Gemini%203.5%20Flash%20Lite-8E24AA.svg)](https://aistudio.google.com/)
+[![Tests](https://img.shields.io/badge/Tests-24%20passed-brightgreen.svg)](ScreenLens.Next.Tests/)
 
-> **ScreenLens** — полноценное открытое Windows-приложение (аналог Google Lens и PowerToys Text Extractor), работающее в системном трее, с глобальным хоткеем, распознаванием текста, автопереводом, QR-сканером и мультимодальным ИИ-анализом на базе Google Gemini (`gemini-3.5-flash-lite`).
+> **ScreenLens.Next** — высокопроизводительный нативный перенос ScreenLens на **C# / .NET 8 / WPF**, ориентированный на минимальное потребление ресурсов, ультра-плавный UX в стиле Google Lens, аппаратное ускорение рендеринга и мгновенную работу с Windows Media OCR.
 
 ---
 
-## ✨ Возможности
+## ✨ Архитектура и стек
 
-- 🚀 **Работа в системном трее**: тихо работает в фоне, сворачивается в трей рядом с часами.
-- ⌨️ **Глобальный хоткей (`Ctrl + Alt + Space`)**: мгновенная активация поверх любых полноэкранных игр, браузеров и документов независимо от текущей раскладки клавиатуры (RU / EN).
-- 🔲 **Интерактивный Snipping Overlay**: выделение области экрана с затемнением, размерами рамки и DPI-масштабированием.
-- 🔤 **Двойной OCR-движок (Dual Engine)**:
-  - *Нативный Windows Media OCR* — работает прямо из коробки без установки внешних программ.
-  - *Tesseract OCR* — расширенная поддержка языковых пакетов и словарей.
-- ⚡ **Плавающая панель действий (Floating Action HUD)**:
-  - 📋 Копирование распознанного текста в один клик.
-  - 🌐 Мгновенный перевод на русский/английский язык (50 мс).
-  - 🤖 Мультимодальный анализ в Gemini 3.5 Flash Lite: объяснение кода, решение формул и поиск ошибок на снимке.
-  - 🛡️ Обход гео-блокировок Gemini (DNS-AI): встроенный DoT и SNI-прокси без необходимости настраивать VPN.
-  - 🔍 Быстрый переход в визуальный поиск Google Lens.
-- 📱 **QR & Barcode сканер**: автоматическое обнаружение ссылок и данных с QR-кодов.
-- 📜 **История захватов**: локальная база SQLite с предпросмотром картинок, текстов и переводов.
-- ⚙️ **GUI-настройки**: графический интерфейс для смены комбинации клавиш, языков, API-ключа Gemini и автозагрузки с Windows.
-- 📦 **Standalone EXE**: скомпилировано в единый переносимый файл (не требует установленного Python).
+- **Язык и среда**: C# 12, .NET 8 (`net8.0-windows10.0.19041.0`)
+- **Графический интерфейс**: Windows Presentation Foundation (WPF), аппаратный рендеринг XAML
+- **OCR**: Windows.Media.Ocr (нативное Windows Runtime API без внешних бинарников)
+- **Захват экрана**: High-DPI Aware Win32 GDI / BitBlt захват экрана
+- **Сниппинг и оверлей**: Аппаратно-ускоренный оверлей `SelectionOverlayWindow` с плавным затемнением и векторными ручками изменения размера (StreamGeometry)
+- **Тесты**: xUnit тестовый комплект (`ScreenLens.Next.Tests`, 24 теста)
 
 ---
 
 ## 📂 Структура проекта
 
 ```text
-ScreenLens/
+ScreenLens.Next/
+├── ScreenLens.Next.sln                 # .NET Solution файл
+├── run_next.cmd                        # Быстрый запуск для Windows CMD
+├── run_next.ps1                        # Быстрый запуск для PowerShell
+├── assets/                             # Иконки и графические ресурсы
 │
-├── app.py                  # Главная точка входа Desktop-приложения (Трей + GUI)
-├── main.py                 # Консольная CLI-версия (для скриптов и терминала)
-├── build.py                # Скрипт сборки в единый EXE через PyInstaller
+├── ScreenLens.Next/                    # Основной проект WPF
+│   ├── App.xaml / App.xaml.cs          # Инициализация приложения и глобальный перехват ошибок
+│   ├── MainWindow.xaml / .cs           # Главное окно и трей
+│   │
+│   ├── Capture/                        # Захват экрана и DPI
+│   │   ├── DpiHelper.cs                # Преобразование координат с учётом системного масштабирования
+│   │   └── ScreenCapturer.cs           # Полноэкранный захват дисплея
+│   │
+│   ├── Core/                           # Модели и настройки
+│   │   ├── Models.cs                   # CaptureArea, TextWord, TextRegion, OcrResult
+│   │   └── AppSettings.cs              # Конфигурация приложения
+│   │
+│   ├── OCR/                            # Распознавание текста
+│   │   ├── IOcrService.cs              # Интерфейс OCR-сервиса
+│   │   ├── TextLayoutHelper.cs         # Пространственная кластеризация строк и слов
+│   │   └── WindowsMediaOcrService.cs   # Windows.Media.Ocr реализация
+│   │
+│   ├── Overlay/                        # Оверлей сниппинга
+│   │   └── SelectionOverlayWindow.xaml # Окно интерактивного выделения
+│   │
+│   ├── Services/                       # Бизнес-сервисы
+│   │   ├── GlobalHotkeyService.cs      # Win32 RegisterHotKey
+│   │   ├── ClipboardService.cs         # Буфер обмена
+│   │   ├── TranslateService.cs         # Сервис перевода
+│   │   ├── AiService.cs                # Сервис Google Gemini Vision
+│   │   └── LensSearchService.cs        # Поиск Google Lens
+│   │
+│   └── Views/                          # Пользовательские элементы управления
+│       ├── FloatingHudControl.xaml     # Двухкапсульная плавающая панель
+│       └── TextSelectionCanvas.xaml    # Интерактивное выделение распознанного текста
 │
-├── core/                   # Ядро системы
-│   ├── capture.py          # DPI-aware оверлей выделения области
-│   ├── screenshot.py       # Модуль захвата экрана и сохранения во временный файл
-│   ├── ocr.py              # Фабрика OCR (Windows Media OCR + Tesseract)
-│   ├── hotkey.py           # Win32 RegisterHotKey слушатель скан-кодов
-│   ├── clipboard.py        # Управление системным буфером обмена
-│   ├── qr.py               # Детектор и декодер QR-кодов (OpenCV)
-│   ├── gemini.py           # Мультимодальный клиент Google Gemini 3.5 Flash Lite
-│   ├── actions.py          # Вспомогательные действия (перевод, браузер)
-│   └── models.py           # Строгие Dataclass-модели
-│
-├── storage/                # Слой данных
-│   └── db.py               # SQLite менеджер (настройки, автозагрузка, история)
-│
-├── ui/                     # Графический интерфейс
-│   ├── tray.py             # Иконка системного трея и меню (pystray)
-│   ├── floating_hud.py     # Плавающая панель действий после захвата
-│   ├── settings_window.py  # Окно настроек
-│   └── history_window.py   # Окно истории захватов с превью
-│
-├── assets/                 # Ресурсы
-│   ├── icon.ico            # Иконка приложения для EXE
-│   └── icon.png            # Иконка высокого разрешения
-│
-├── tests/                  # Модульное тестирование (18 тестов)
-│   └── test_screenlens.py
-│
-├── requirements.txt        # Зависимости
-├── ROADMAP.md              # Дорожная карта развития
-├── LICENSE                 # Лицензия MIT
-└── README.md               # Документация
+└── ScreenLens.Next.Tests/              # Набор модульных тестов (xUnit)
+    ├── CaptureAreaTests.cs             # Тесты геометрии рамки
+    ├── DpiHelperTests.cs               # Тесты масштабирования DPI
+    └── TextLayoutHelperTests.cs        # Тесты кластеризации строк OCR
 ```
 
 ---
 
-## 🚀 Быстрый запуск
+## 🚀 Сборка и запуск
 
-### Вариант 1. Запуск готового EXE (без установки Python)
-Скачайте готовый `ScreenLens.exe` из папки `dist/` и запустите его двойным кликом. Приложение появится в системном трее (возле часов Windows).
+### Требования
+- Windows 10 (сборка 19041+) или Windows 11
+- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-### Вариант 2. Запуск из исходного кода
-
+### Запуск приложения
 ```powershell
-# 1. Перейдите в папку проекта
-cd d:\Python\GLens
+# Запуск через PowerShell
+./run_next.ps1
 
-# 2. Активируйте виртуальное окружение
-.\.venv\Scripts\Activate.ps1
-
-# 3. Установите зависимости
-pip install -r requirements.txt
-
-# 4. Запустите десктопное приложение
-python app.py
+# Либо напрямую через dotnet CLI
+dotnet run --project ScreenLens.Next
 ```
 
-### Вариант 3. Запуск консольной версии (CLI)
-
+### Запуск тестов
 ```powershell
-# Однократный захват
-python main.py
-
-# Фоновый консольный режим с автопереводом
-python main.py --daemon --translate ru
+dotnet test ScreenLens.Next.sln
 ```
-
----
-
-## 🛠 Сборка в единый EXE
-
-Для компиляции приложения в единый исполняемый файл с иконкой и без окна консоли выполните:
-
-```powershell
-python build.py
-```
-
-Готовый файл появится в `dist/ScreenLens.exe`.
-
----
-
-## ⌨️ Использование
-
-1. Нажмите **`Ctrl + Alt + Space`** в любом окне Windows.
-2. Экран затемнится — выделите нужную область (Google Lens рамка).
-3. Настройте границы: потяните за любой из 8 круглых маркеров или переместите область целиком.
-4. Выберите действие на прикреплённой панели (Floating HUD):
-   - **🔍 Lens**: открытие визуального поиска Google Lens.
-   - **🌐 Перевод**: мгновенный перевод на выбранный язык.
-   - **🤖 ИИ**: анализ через Google Gemini Vision.
-   - **📝 Текст**: распознавание текста (OCR) и копирование.
-4. Кликните правой кнопкой мыши по иконке в трее, чтобы открыть **Историю** или **Настройки**.
 
 ---
 

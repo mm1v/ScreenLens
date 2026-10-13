@@ -1,102 +1,43 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-*.pyd
-
-# C extensions
-*.so
-
-# Distribution / packaging
-build/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Virtual Environments
-.venv/
-venv/
-ENV/
-env/
-env.bak/
-venv.bak/
-
-# Environment variables, credentials, API keys and secrets
-.env
-.env.*
-*.env
-*.key
-*.pem
-*.cert
-*.secret
-*.token
-credentials.json
-client_secrets.json
-
-# Databases and local runtime data
-*.db
-*.sqlite
-*.sqlite3
-*.log
-out.txt
-*.out
-
-# Temporary / Scratch directories
-scratch/
-tmp/
-temp/
-.cache/
-*.tmp
-
-# Unit test / coverage reports
-.pytest_cache/
-.coverage
-.coverage.*
-htmlcov/
-.mypy_cache/
-
-# IDE / Editor artifacts
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# Operating System files
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-.DS_Store
-
-# Temporary screenshots / capture caches (keep assets/)
-*.png
-*.jpg
-*.jpeg
-!assets/*.png
-!assets/*.ico
-
-# .NET / Visual Studio
+# Build results
 [Bb]in/
 [Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
 *.user
 *.suo
 *.userosscache
 *.sln.docstates
+*.suo
+*.userprefs
+*.launchSettings.json
+
+# Environment / secrets
+*.env
+*.key
+*.token
+
+# OS files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# Python remnants
+ScreenLens.spec
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+scratch/
+
+# Assets exception
+*.png
+*.ico
+!assets/*.png
+!assets/*.ico
