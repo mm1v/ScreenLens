@@ -387,22 +387,16 @@ def build_gemini_opener(
 
 
 class GeminiVisionClient:
-    """Client for Google Gemini multimodal vision models (Gemini 3.5 Flash Lite)."""
+    """Client for Google Gemini multimodal vision models."""
 
+    DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
     DEFAULT_MODEL = "gemini-3.5-flash-lite"
-    MODEL_ALIASES = {
-        "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
-        "gemini-2.5-flash": "gemini-3.5-flash-lite",
-        "gemini-2.0-flash": "gemini-3.5-flash-lite",
-    }
-    API_URL_TEMPLATE = (
-        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    )
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         model: str = DEFAULT_MODEL,
+        api_url: Optional[str] = None,
         proxy_url: Optional[str] = None,
         use_dns_ai: Optional[bool] = None,
         logger: Optional[logging.Logger] = None,
@@ -421,6 +415,16 @@ class GeminiVisionClient:
                     self._logger.warning("Could not read Gemini API key from database: %s", exc)
             self._api_key = resolved_key
 
+        if api_url is not None:
+            self._api_url = api_url.strip()
+        else:
+            try:
+                from storage.db import DatabaseManager
+                db_settings = DatabaseManager().get_settings()
+                self._api_url = (getattr(db_settings, "ai_api_url", None) or "").strip()
+            except Exception:
+                self._api_url = ""
+
         if use_dns_ai is None:
             if proxy_url and proxy_url.strip():
                 use_dns_ai = False
@@ -432,15 +436,23 @@ class GeminiVisionClient:
                 except Exception:
                     use_dns_ai = True
 
-        self._model = self.MODEL_ALIASES.get(model, model)
+        self._model = (model or self.DEFAULT_MODEL).strip()
         self._use_dns_ai = use_dns_ai
         self._proxy_url = resolve_proxy(proxy_url, self._logger)
-        self._active_sni_ip = get_active_sni_proxy_ip(logger=self._logger) if self._use_dns_ai else None
-        self._opener = build_gemini_opener(
-            proxy_url=self._proxy_url,
-            use_dns_ai=self._use_dns_ai,
-            logger=self._logger,
-        )
+        self._active_sni_ip: Optional[str] = None
+        self._opener: Optional[urllib.request.OpenerDirector] = None
+
+    def _get_opener(self) -> urllib.request.OpenerDirector:
+        """Lazily creates and returns the network opener on first use in background thread."""
+        if self._opener is None:
+            if self._use_dns_ai and self._active_sni_ip is None:
+                self._active_sni_ip = get_active_sni_proxy_ip(logger=self._logger)
+            self._opener = build_gemini_opener(
+                proxy_url=self._proxy_url,
+                use_dns_ai=self._use_dns_ai,
+                logger=self._logger,
+            )
+        return self._opener
 
     @property
     def use_dns_ai(self) -> bool:
@@ -457,6 +469,28 @@ class GeminiVisionClient:
         """Returns True if an API key is available."""
         return bool(self._api_key and self._api_key.strip())
 
+    def build_request_url(self) -> str:
+        """Generates dynamic AI request URL by appending /models/{model}:generateContent to base URL."""
+        base_url = (self._api_url or "").strip() or self.DEFAULT_BASE_URL
+        model = (self._model or self.DEFAULT_MODEL).strip()
+
+        if "{model}" in base_url:
+            url = base_url.replace("{model}", model)
+        elif ":generateContent" in base_url:
+            url = base_url
+        elif base_url.endswith("/models") or base_url.endswith("/models/"):
+            url = f"{base_url.rstrip('/')}/{model}:generateContent"
+        else:
+            url = f"{base_url.rstrip('/')}/models/{model}:generateContent"
+
+        if self._api_key:
+            if "{api_key}" in url:
+                url = url.replace("{api_key}", self._api_key.strip())
+            if "{key}" in url:
+                url = url.replace("{key}", self._api_key.strip())
+
+        return url
+
     def _execute_generate_content(self, payload: dict, timeout: float = 35.0) -> str:
         """Executes generateContent request to Gemini API with automatic SNI proxy failover and sanitized logs."""
         if not self.is_configured:
@@ -465,17 +499,21 @@ class GeminiVisionClient:
                 "или получите бесплатный ключ в Google AI Studio: https://aistudio.google.com/"
             )
 
-        url = self.API_URL_TEMPLATE.format(model=self._model, api_key=self._api_key)
+        url = self.build_request_url()
         data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["x-goog-api-key"] = self._api_key
+
         req = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
 
         try:
-            with self._opener.open(req, timeout=timeout) as response:
+            with self._get_opener().open(req, timeout=timeout) as response:
                 res_body = response.read().decode("utf-8")
                 parsed = json.loads(res_body)
 

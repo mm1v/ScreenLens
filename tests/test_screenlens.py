@@ -4,7 +4,7 @@ import time
 import tkinter as tk
 import unittest
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageTk
 
 from core.models import CaptureArea, ScreenshotResult, OCRResult
 from core.screenshot import ScreenGrabber
@@ -346,6 +346,47 @@ class TestGeminiClient(unittest.TestCase):
         parsed = _parse_dns_response(mock_resp)
         self.assertEqual(parsed, ["191.44.41.79"])
 
+    def test_gemini_client_lazy_opener_initialization(self):
+        from core.gemini import GeminiVisionClient
+        # When use_dns_ai is True, __init__ must NOT perform network queries or initialize opener synchronously
+        client = GeminiVisionClient(api_key="test_key", use_dns_ai=True)
+        self.assertIsNone(client._opener)
+        self.assertIsNone(client._active_sni_ip)
+        # Calling _get_opener initializes it
+        opener = client._get_opener()
+        self.assertIsNotNone(opener)
+        self.assertIs(client._opener, opener)
+
+    def test_gemini_client_dynamic_url_and_custom_model(self):
+        from core.gemini import GeminiVisionClient
+        # 1. Base URL with default model
+        client = GeminiVisionClient(
+            api_key="my_custom_key",
+            model="gemini-3.5-flash-lite",
+            api_url="https://generativelanguage.googleapis.com/v1beta",
+        )
+        url1 = client.build_request_url()
+        self.assertEqual(url1, "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent")
+        self.assertEqual(client._model, "gemini-3.5-flash-lite")
+
+        # 2. Base URL without /models appends /models/{model}:generateContent
+        client2 = GeminiVisionClient(
+            api_key="key_abc",
+            model="custom-vision-v1",
+            api_url="https://proxy.example.com/v1beta",
+        )
+        url2 = client2.build_request_url()
+        self.assertEqual(url2, "https://proxy.example.com/v1beta/models/custom-vision-v1:generateContent")
+
+        # 3. Base URL with /models appends /{model}:generateContent
+        client3 = GeminiVisionClient(
+            api_key="key_xyz",
+            model="gemini-1.5-pro",
+            api_url="https://gateway.example.com/v1beta/models",
+        )
+        url3 = client3.build_request_url()
+        self.assertEqual(url3, "https://gateway.example.com/v1beta/models/gemini-1.5-pro:generateContent")
+
 
 class TestActions(unittest.TestCase):
     def test_translate_empty_text(self):
@@ -637,6 +678,57 @@ class TestGoogleLensSelection(unittest.TestCase):
         hx3, hy3 = get_hud_placement(1800, 300, 1910, 500, hud_w, hud_h, screen_w, screen_h, margin=14)
         self.assertEqual(hx3, screen_w - hud_w - 14)
 
+        # Huge selection occupying screen (full screen): places inside selection with safe clearance from bottom
+        hx_full, hy_full = get_hud_placement(0, 0, screen_w, screen_h, hud_w, hud_h, screen_w, screen_h, margin=14)
+        self.assertEqual(hx_full, (screen_w - hud_w) // 2)
+        self.assertLessEqual(hy_full + hud_h, screen_h - 36)
+        self.assertGreaterEqual(hy_full, 0)
+
+    def test_get_hud_placement_multimonitor(self):
+        from ui.floating_hud import get_hud_placement
+        vw, vh = 3680, 1080
+        hud_w, hud_h = 394, 58
+        mon1_bounds = (1920, 0, 3680, 942)  # Secondary monitor (1760x990 with 48px taskbar)
+
+        # 1. Full-screen selection on secondary monitor
+        hx, hy = get_hud_placement(
+            1920, 0, 3680, 942, hud_w, hud_h, vw, vh, margin=14, monitor_bounds=mon1_bounds
+        )
+        # Horizontally centered within Monitor 1
+        self.assertEqual(hx, 1920 + (1760 - hud_w) // 2)
+        # Vertically inside selection with safe clearance above taskbar at 942
+        self.assertLessEqual(hy + hud_h, 942 - 36)
+        self.assertGreaterEqual(hy, 0)
+
+        # 2. Near bottom of secondary monitor: must place above, never into taskbar or off-screen
+        hx_bot, hy_bot = get_hud_placement(
+            2000, 500, 2800, 930, hud_w, hud_h, vw, vh, margin=14, monitor_bounds=mon1_bounds
+        )
+        self.assertEqual(hy_bot, 500 - hud_h - 14)
+        self.assertLessEqual(hy_bot + hud_h, 942)
+
+    def test_get_card_placement_multimonitor(self):
+        from ui.floating_hud import get_card_placement
+        vw, vh = 3680, 1080
+        mon0_bounds = (0, 0, 1920, 1032)
+        # Selection near right edge of Primary Monitor: card would bleed onto Monitor 1 if virtual width was used
+        box = (1500, 100, 1850, 600)
+        card_w, card_h = 380, 300
+        cx, cy = get_card_placement(
+            box=box,
+            card_w=card_w,
+            card_h=card_h,
+            hud_x=1500,
+            hud_y=614,
+            screen_w=vw,
+            screen_h=vh,
+            placement_mode="side_right",
+            monitor_bounds=mon0_bounds,
+        )
+        # Must stay inside Primary Monitor bounds (not bleed to x >= 1920)
+        self.assertLessEqual(cx + card_w, 1920)
+        self.assertGreaterEqual(cx, 0)
+
     def test_cursor_map_valid_in_tkinter(self):
         import tkinter as tk
         from core.capture import CURSOR_MAP
@@ -683,6 +775,60 @@ class TestGoogleLensSelection(unittest.TestCase):
             self.assertTrue(clicked[0])
             btn.set_text("Updated")
             self.assertEqual(btn.itemcget(btn.txt_id, "text"), "Updated")
+            btn.config(state="disabled")
+            self.assertEqual(btn._state, "disabled")
+            btn.config(state="normal")
+            self.assertEqual(btn._state, "normal")
+        finally:
+            root.destroy()
+
+    def test_ai_input_placeholder_and_submit_guard(self):
+        import tkinter as tk
+        from unittest.mock import MagicMock
+        from ui.floating_hud import RoundedCardController
+        from ui.ai_panel import AIPanelController
+
+        root = tk.Tk()
+        try:
+            cv = tk.Canvas(root, width=800, height=600)
+            cv.pack()
+            box = (100, 100, 400, 300)
+            controller = RoundedCardController(
+                canvas=cv,
+                box=box,
+                hud_pos=(100, 314, 442, 58),
+                screen_size=(1920, 1080),
+            )
+            mock_session = MagicMock()
+            mock_session.get_last_response.return_value = None
+
+            card = AIPanelController(
+                controller=controller,
+                session=mock_session,
+            )
+
+            # Initially placeholder is active, text is muted gray, send button is disabled
+            self.assertTrue(card._placeholder_active)
+            self.assertEqual(card.ent.get(), "Вопрос по снимку...")
+            self.assertEqual(card.btn_send._state, "disabled")
+
+            # Calling submit with placeholder does not invoke session
+            card._submit_query()
+            mock_session.send_message.assert_not_called()
+
+            # Typing actual text activates send button
+            card.ent.delete(0, tk.END)
+            card.ent.insert(0, "Что на фото?")
+            card._placeholder_active = False
+            card._update_send_state()
+            self.assertEqual(card.btn_send._state, "normal")
+
+            # Clearing text disables send button
+            card.ent.delete(0, tk.END)
+            card._update_send_state()
+            self.assertEqual(card.btn_send._state, "disabled")
+
+            controller.destroy()
         finally:
             root.destroy()
 
@@ -744,6 +890,27 @@ class TestGoogleLensSelection(unittest.TestCase):
             # Test motion / hover
             hud.handle_motion(140, 120)
             hud.clear_hover()
+
+            # Test motion / hover over copy and close buttons (Block 2)
+            bg_items = cv.find_withtag("lens_hud_bg")
+            self.assertEqual(len(bg_items), 2)
+
+            hud.handle_motion(430, 120)  # copy
+            self.assertEqual(hud._hovered_btn, "copy")
+            hover_items = cv.find_withtag("lens_hud_hover")
+            self.assertGreater(len(hover_items), 0)
+            for bg_id in bg_items:
+                self.assertGreater(hover_items[0], bg_id)
+
+            hud.handle_motion(498, 120)  # close
+            self.assertEqual(hud._hovered_btn, "close")
+            hover_items = cv.find_withtag("lens_hud_hover")
+            self.assertGreater(len(hover_items), 0)
+            for bg_id in bg_items:
+                self.assertGreater(hover_items[0], bg_id)
+
+            hud.clear_hover()
+            self.assertEqual(len(cv.find_withtag("lens_hud_hover")), 0)
 
             # Test hide resets active_mode
             hud.set_active_mode("ai")
@@ -2437,6 +2604,66 @@ class TestGeminiDeprecationAndClipboardPolicy(unittest.TestCase):
         self.assertEqual(set(corners_def.keys()), {"nw", "ne", "sw", "se"})
         for c_img in corners_def.values():
             self.assertEqual(c_img.size, (22, 22))
+
+    def test_selectable_text_layer_marquee_reuse_and_rgba_cache(self):
+        """Verifies that SelectableTextLayer caches base RGBA on box detection and reuses canvas marquee item during drag."""
+        from ui.text_selection_layer import SelectableTextLayer
+        from PIL import Image
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            canvas = tk.Canvas(root, width=400, height=300)
+            canvas.pack()
+            layer = SelectableTextLayer(canvas=canvas, root=root)
+
+            # Setup test crop image and canvas cutout item
+            img = Image.new("RGB", (200, 200), (255, 255, 255))
+            layer.crop_img = img
+            photo = ImageTk.PhotoImage(img)
+            layer.cutout_item_id = canvas.create_image(50, 50, image=photo, anchor="nw")
+
+            # Load OCR result to trigger box detection rendering
+            ocr_res = OCRResult(
+                raw_text="Hello World",
+                cleaned_text="Hello World",
+                image_path=Path("dummy.png"),
+                lines=(
+                    {
+                        "text": "Hello World",
+                        "words": [
+                            {"text": "Hello", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 40.0, "height": 20.0}},
+                            {"text": "World", "bounding_rect": {"x": 60.0, "y": 10.0, "width": 40.0, "height": 20.0}},
+                        ],
+                    },
+                ),
+            )
+            layer.load_from_ocr(
+                ocr_res,
+                (50, 50, 250, 250),
+                crop_img=img,
+                cutout_item_id=layer.cutout_item_id,
+            )
+            layer.show()
+            self.assertIsNotNone(layer._base_detected_rgba)
+            self.assertEqual(layer._base_detected_rgba.mode, "RGBA")
+
+            # Test marquee creation and reuse during drag
+            self.assertIsNone(layer._marquee_id)
+            layer.handle_press(50, 50)
+            layer.handle_drag(70, 70)
+            marquee_id_first = layer._marquee_id
+            self.assertIsNotNone(marquee_id_first)
+
+            # Next drag event must update coordinates on the existing canvas item rather than re-creating
+            layer.handle_drag(90, 90)
+            self.assertEqual(layer._marquee_id, marquee_id_first)
+
+            # Mouse release cleans up marquee
+            layer.handle_release(90, 90)
+            self.assertIsNone(layer._marquee_id)
+        finally:
+            root.destroy()
 
 
 if __name__ == "__main__":

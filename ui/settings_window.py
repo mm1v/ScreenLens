@@ -27,8 +27,8 @@ class SettingsWindow:
         parent = master or (tk._default_root if tk._default_root and getattr(tk._default_root, "winfo_exists", lambda: False)() else None)
         win = tk.Toplevel(parent) if parent else tk.Tk()
         win.title(f"Настройки ScreenLens v{__version__}")
-        win.geometry("490x580")
-        win.minsize(460, 520)
+        win.geometry("540x720")
+        win.minsize(480, 600)
         win.resizable(True, True)
         win.configure(bg="#181c24")
         win.attributes("-topmost", True)
@@ -107,10 +107,63 @@ class SettingsWindow:
         tr_lang_cb.set(settings.translate_lang)
         tr_lang_cb.pack(fill=tk.X, pady=(2, 10))
 
-        # 4. Gemini API Key
+        # 4. AI URL (URL для запросов ИИ)
+        url_header = tk.Frame(frame, bg="#181c24")
+        url_header.pack(fill=tk.X, pady=(2, 0))
+        tk.Label(url_header, text="URL для запросов ИИ:", font=("Segoe UI", 10, "bold"), fg="#ffffff", bg="#181c24").pack(side=tk.LEFT)
+
+        default_api_url = "https://generativelanguage.googleapis.com/v1beta"
+        default_model = "gemini-3.5-flash-lite"
+
+        def reset_url():
+            ai_url_ent.delete(0, tk.END)
+            ai_url_ent.insert(0, default_api_url)
+
+        reset_btn = tk.Label(
+            url_header,
+            text="(Сбросить URL)",
+            font=("Segoe UI", 9, "underline"),
+            fg="#60a5fa",
+            bg="#181c24",
+            cursor="hand2",
+        )
+        reset_btn.pack(side=tk.RIGHT)
+        reset_btn.bind("<Button-1>", lambda e: reset_url())
+
+        ai_url_ent = tk.Entry(
+            frame,
+            bg="#222834",
+            fg="#ffffff",
+            insertbackground="#00e5ff",
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+        )
+        current_ai_url = getattr(settings, "ai_api_url", "") or default_api_url
+        ai_url_ent.insert(0, current_ai_url)
+        ai_url_ent.pack(fill=tk.X, pady=(2, 8), ipady=3)
+        ai_url_ent.bind("<Button-1>", lambda e: ai_url_ent.focus_set())
+        attach_context_menu(ai_url_ent)
+
+        # 5. AI Model (Модель для запросов ИИ)
+        tk.Label(frame, text="Модель ИИ (Model):", font=("Segoe UI", 10, "bold"), fg="#ffffff", bg="#181c24").pack(anchor=tk.W)
+        model_ent = tk.Entry(
+            frame,
+            bg="#222834",
+            fg="#ffffff",
+            insertbackground="#00e5ff",
+            font=("Consolas", 10),
+            relief=tk.FLAT,
+        )
+        current_model = getattr(settings, "gemini_model", "") or default_model
+        model_ent.insert(0, current_model)
+        model_ent.pack(fill=tk.X, pady=(2, 8), ipady=3)
+        model_ent.bind("<Button-1>", lambda e: model_ent.focus_set())
+        attach_context_menu(model_ent)
+
+        # 6. Gemini API Key
         gem_header = tk.Frame(frame, bg="#181c24")
         gem_header.pack(fill=tk.X)
-        tk.Label(gem_header, text="Google Gemini API Key:", font=("Segoe UI", 10, "bold"), fg="#ffffff", bg="#181c24").pack(side=tk.LEFT)
+        tk.Label(gem_header, text="API KEY для ИИ:", font=("Segoe UI", 10, "bold"), fg="#ffffff", bg="#181c24").pack(side=tk.LEFT)
 
         link_lbl = tk.Label(
             gem_header,
@@ -252,8 +305,9 @@ class SettingsWindow:
                 ocr_lang=ocr_lang_cb.get().strip(),
                 ocr_engine=settings.ocr_engine,
                 translate_lang=tr_lang_cb.get().strip(),
+                ai_api_url=ai_url_ent.get().strip() or default_api_url,
                 gemini_api_key=key_ent.get().strip(),
-                gemini_model=settings.gemini_model,
+                gemini_model=model_ent.get().strip() or default_model,
                 gemini_proxy=settings.gemini_proxy,
                 gemini_use_dns_ai=dns_ai_var.get(),
                 ai_enabled=ai_var.get(),

@@ -222,6 +222,17 @@ class TestAIUIComponents(unittest.TestCase):
 
     def tearDown(self):
         self.tmp_dir.cleanup()
+        if self.root:
+            for child in self.root.winfo_children():
+                try:
+                    child.destroy()
+                except Exception:
+                    pass
+            try:
+                self.root.update_idletasks()
+                self.root.update()
+            except Exception:
+                pass
 
     def test_create_rounded_thumbnail(self):
         thumb = create_rounded_thumbnail(self.img_path, target_size=(46, 46), radius=6)
@@ -262,7 +273,7 @@ class TestAIUIComponents(unittest.TestCase):
         # Test quick action click
         with patch.object(self.session, "send_message", return_value="Объяснение снимка"):
             panel._on_quick_action("Объясни код")
-            for _ in range(25):
+            for _ in range(50):
                 time.sleep(0.02)
                 try:
                     while not panel._ui_queue.empty():
@@ -306,7 +317,7 @@ class TestAIUIComponents(unittest.TestCase):
 
         with patch.object(self.session, "send_message", side_effect=RuntimeError("Connection dropped")):
             panel._submit_query()
-            for _ in range(25):
+            for _ in range(50):
                 time.sleep(0.02)
                 try:
                     while not panel._ui_queue.empty():
@@ -366,7 +377,9 @@ class TestAIUIComponents(unittest.TestCase):
 
             # Test transcript formatting
             copied_texts = []
+            chat_win.clipboard_clear = lambda: None
             chat_win.clipboard_append = lambda t: copied_texts.append(t)
+            chat_win.update = lambda: None
             chat_win._copy_full_dialog()
             self.assertTrue(len(copied_texts) > 0)
             self.assertIn("ScreenLens AI Диалог", copied_texts[0])

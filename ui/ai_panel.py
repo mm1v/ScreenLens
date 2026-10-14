@@ -214,7 +214,7 @@ class RoundedInputBox(tk.Canvas):
         self.ent = tk.Entry(
             self,
             bg="#181a1d",
-            fg="#ffffff",
+            fg="#80868b",
             font=("Segoe UI", 10),
             relief=tk.FLAT,
             bd=0,
@@ -230,6 +230,7 @@ class RoundedInputBox(tk.Canvas):
             height=26,
             font=("Segoe UI", 9, "bold"),
         )
+        self.btn_send.config(state="disabled")
         self.btn_win = self.create_window(100, (height - 26) // 2, window=self.btn_send, anchor=tk.NW)
 
         self.bind("<Configure>", self._on_configure)
@@ -419,9 +420,16 @@ class AIPanelController:
         self._logger = logger or logging.getLogger(__name__)
 
         self.card_frame = controller.content_frame
+        try:
+            controller.ai_panel = self
+            self.card_frame.bind("<Destroy>", lambda e: self.destroy(), add="+")
+        except Exception:
+            pass
         self.is_loading = False
         self._last_prompt: str = ""
         self._thumb_photo: Optional[ImageTk.PhotoImage] = None
+        self._is_destroyed: bool = False
+        self._poll_job: Optional[str] = None
 
         self._ui_queue: queue.Queue = queue.Queue()
         self._schedule_ui_queue()
@@ -431,7 +439,12 @@ class AIPanelController:
     def _schedule_ui_queue(self) -> None:
         """Polls UI queue on Tkinter main thread every 25ms."""
         def _poll():
+            if getattr(self, "_is_destroyed", False):
+                return
             try:
+                if not hasattr(self, "card_frame") or not self.card_frame.winfo_exists():
+                    self._is_destroyed = True
+                    return
                 while True:
                     fn = self._ui_queue.get_nowait()
                     try:
@@ -441,21 +454,37 @@ class AIPanelController:
             except queue.Empty:
                 pass
             except Exception:
-                pass
+                return
             try:
-                if self.card_frame.winfo_exists():
-                    self.card_frame.after(25, _poll)
+                if not getattr(self, "_is_destroyed", False) and hasattr(self, "card_frame") and self.card_frame.winfo_exists():
+                    self._poll_job = self.card_frame.after(25, _poll)
             except Exception:
                 pass
 
         try:
-            self.card_frame.after(25, _poll)
+            if not getattr(self, "_is_destroyed", False) and hasattr(self, "card_frame") and self.card_frame.winfo_exists():
+                self._poll_job = self.card_frame.after(25, _poll)
         except Exception:
             pass
 
+    def destroy(self) -> None:
+        """Stops background UI polling loop and marks controller as destroyed."""
+        self._is_destroyed = True
+        if self._poll_job and hasattr(self, "card_frame"):
+            try:
+                top = self.card_frame.winfo_toplevel()
+                top.after_cancel(self._poll_job)
+            except Exception:
+                try:
+                    self.card_frame.after_cancel(self._poll_job)
+                except Exception:
+                    pass
+        self._poll_job = None
+
     def _post_to_ui(self, fn: Callable[[], None]) -> None:
         """Dispatches callback from worker threads safely to the main thread."""
-        self._ui_queue.put(fn)
+        if not getattr(self, "_is_destroyed", False):
+            self._ui_queue.put(fn)
 
     def _build_ui(self) -> None:
         """Constructs compact AI panel widgets tailored for side placement."""
@@ -564,24 +593,38 @@ class AIPanelController:
         self.btn_send = self.input_box.btn_send
         self.btn_send.command = self._submit_query
 
+        self.ent.delete(0, tk.END)
         self.ent.insert(0, "Вопрос по снимку...")
+        self.ent.config(fg="#80868b")
         self._placeholder_active = True
+        self.btn_send.config(state="disabled")
+
+        def _update_send_state(*_args):
+            if self.is_loading:
+                return
+            has_text = bool(not self._placeholder_active and self.ent.get().strip())
+            self.btn_send.config(state="normal" if has_text else "disabled")
 
         def _on_entry_focus_in(e):
             if self._placeholder_active:
                 self.ent.delete(0, tk.END)
                 self.ent.config(fg="#ffffff")
                 self._placeholder_active = False
+            _update_send_state()
 
         def _on_entry_focus_out(e):
             if not self.ent.get().strip():
+                self.ent.delete(0, tk.END)
                 self.ent.insert(0, "Вопрос по снимку...")
                 self.ent.config(fg="#80868b")
                 self._placeholder_active = True
+            _update_send_state()
 
         self.ent.bind("<FocusIn>", _on_entry_focus_in)
         self.ent.bind("<FocusOut>", _on_entry_focus_out)
+        self.ent.bind("<KeyRelease>", _update_send_state)
         self.ent.bind("<Return>", lambda e: self._submit_query())
+        self._update_send_state = _update_send_state
 
         # 4. Response Area (Rounded with Minimal Copy Icon and Dark Scrollbar)
         self.resp_box = RoundedResponseBox(self.card_frame, height=120, radius=12)
@@ -611,7 +654,9 @@ class AIPanelController:
             return
         self.ent.delete(0, tk.END)
         self.ent.insert(0, prompt)
+        self.ent.config(fg="#ffffff")
         self._placeholder_active = False
+        self.btn_send.config(state="normal")
         self._submit_query()
 
     def _on_continue_dialog(self) -> None:
@@ -622,6 +667,7 @@ class AIPanelController:
         self.ent.insert(0, "Следующий вопрос по этому снимку...")
         self.ent.config(fg="#80868b")
         self._placeholder_active = True
+        self.btn_send.config(state="disabled")
         self.ent.focus_set()
 
     def _set_loading_state(self, loading: bool) -> None:
@@ -634,28 +680,31 @@ class AIPanelController:
                 b.config(state="disabled")
         else:
             self.lbl_status.config(text=" • Готов", fg="#4ade80")
-            self.btn_send.config(state="normal")
+            has_text = bool(not self._placeholder_active and self.ent.get().strip())
+            self.btn_send.config(state="normal" if has_text else "disabled")
             for b in self.quick_buttons:
                 b.config(state="normal")
 
     def _update_response_height(self, text: str) -> None:
         """Dynamically adjusts text area height downwards to comfortably fit the response."""
-        try:
-            self.txt_res.update_idletasks()
-            dl_tuple = self.txt_res.count("1.0", "end - 1c", "displaylines")
-            display_lines = dl_tuple[0] if dl_tuple else len(text.splitlines())
-        except Exception:
-            display_lines = len(text.splitlines())
+        lines = text.splitlines() or [""]
+        display_lines = sum(max(1, (len(line) + 37) // 38) for line in lines)
 
         card_cy = getattr(self.controller, "cy", 0)
-        screen_h = getattr(self.controller, "screen_h", 1080)
+        if getattr(self.controller, "monitor_bounds", None):
+            _, mon_y1, _, mon_y2 = self.controller.monitor_bounds
+            screen_h = mon_y2
+        else:
+            screen_h = getattr(self.controller, "screen_h", 1080)
         margin = 16
-        avail_h = max(200, screen_h - card_cy - margin - 170)
-        max_lines_screen = max(6, avail_h // 22)
+        # Reduce max available height by 5% as requested by user
+        raw_avail_h = max(140, screen_h - card_cy - margin - 200)
+        avail_h = int(raw_avail_h * 0.95)
+        max_lines_screen = max(4, avail_h // 22)
         target_lines = min(max_lines_screen, max(4, display_lines))
 
         self.txt_res.config(height=target_lines)
-        target_box_h = 38 + max(70, target_lines * 19)
+        target_box_h = 38 + max(60, min(avail_h - 10, target_lines * 19))
         if hasattr(self, "resp_box"):
             self.resp_box.set_box_height(target_box_h)
 
@@ -664,9 +713,12 @@ class AIPanelController:
         if self.is_loading:
             return
 
+        if self._placeholder_active:
+            return
+
         prompt = self.ent.get().strip()
-        if self._placeholder_active or not prompt or prompt.startswith("Задайте вопрос") or prompt.startswith("Вопрос по снимку"):
-            prompt = "Объясни подробно, что здесь изображено / как решить ошибку"
+        if not prompt or prompt.startswith("Задайте вопрос") or prompt.startswith("Вопрос по снимку"):
+            return
 
         self._last_prompt = prompt
         self._set_loading_state(True)
@@ -869,6 +921,8 @@ class AIExtendedChatWindow(tk.Toplevel):
         """Polls UI queue on Tkinter main thread every 25ms."""
         def _poll():
             try:
+                if not self.winfo_exists():
+                    return
                 while True:
                     fn = self._ui_queue.get_nowait()
                     try:
@@ -878,7 +932,7 @@ class AIExtendedChatWindow(tk.Toplevel):
             except queue.Empty:
                 pass
             except Exception:
-                pass
+                return
             try:
                 if self.winfo_exists():
                     self.after(25, _poll)
@@ -886,7 +940,8 @@ class AIExtendedChatWindow(tk.Toplevel):
                 pass
 
         try:
-            self.after(25, _poll)
+            if self.winfo_exists():
+                self.after(25, _poll)
         except Exception:
             pass
 

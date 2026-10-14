@@ -54,6 +54,10 @@ class TestStorageSecurity(unittest.TestCase):
         loaded = self.db.get_settings()
         self.assertFalse(loaded.gemini_use_dns_ai)
 
+    def test_default_gemini_api_key_is_empty(self):
+        settings = self.db.get_settings()
+        self.assertEqual(settings.gemini_api_key, "")
+
 
 if __name__ == "__main__":
     unittest.main()

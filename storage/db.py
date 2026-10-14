@@ -79,6 +79,7 @@ class AppSettings:
     ocr_lang: str = "rus+eng"
     ocr_engine: str = "auto"
     translate_lang: str = "ru"
+    ai_api_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash-lite"
     gemini_proxy: str = ""
@@ -111,6 +112,7 @@ class DatabaseManager:
         "ocr_lang": "rus+eng",
         "ocr_engine": "auto",
         "translate_lang": "ru",
+        "ai_api_url": "https://generativelanguage.googleapis.com/v1beta",
         "gemini_api_key": "",
         "gemini_model": "gemini-3.5-flash-lite",
         "gemini_proxy": "",
@@ -182,6 +184,7 @@ class DatabaseManager:
             ocr_lang=rows.get("ocr_lang", "rus+eng"),
             ocr_engine=rows.get("ocr_engine", "auto"),
             translate_lang=rows.get("translate_lang", "ru"),
+            ai_api_url=rows.get("ai_api_url", "https://generativelanguage.googleapis.com/v1beta"),
             gemini_api_key=unprotect_secret(rows.get("gemini_api_key", "")),
             gemini_model=rows.get("gemini_model", "gemini-3.5-flash-lite"),
             gemini_proxy=rows.get("gemini_proxy", ""),
@@ -199,6 +202,7 @@ class DatabaseManager:
             "ocr_lang": settings.ocr_lang,
             "ocr_engine": settings.ocr_engine,
             "translate_lang": settings.translate_lang,
+            "ai_api_url": settings.ai_api_url,
             "gemini_api_key": protect_secret(settings.gemini_api_key),
             "gemini_model": settings.gemini_model,
             "gemini_proxy": settings.gemini_proxy,

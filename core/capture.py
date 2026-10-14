@@ -4,6 +4,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from typing import Any, Optional
@@ -25,6 +26,7 @@ from ui.floating_hud import (
     create_rounded_card,
     get_card_placement,
     get_hud_placement,
+    get_monitor_bounds,
     render_lens_corners,
     render_pill_badge,
 )
@@ -250,7 +252,8 @@ class ScreenAreaSelector:
         canvas.config(cursor="cross")
 
         if full_desktop_img:
-            dimmed_img = ImageEnhance.Brightness(full_desktop_img).enhance(0.55)
+            lut = [int(i * 0.55) for i in range(256)] * len(full_desktop_img.getbands())
+            dimmed_img = full_desktop_img.point(lut)
             bg_photo = ImageTk.PhotoImage(dimmed_img)
             canvas.create_image(0, 0, image=bg_photo, anchor=tk.NW, tags="bg_dimmed")
             canvas._bg_photo = bg_photo
@@ -329,6 +332,10 @@ class ScreenAreaSelector:
         drag_start_my: int = 0
         orig_box: tuple[int, int, int, int] = (0, 0, 0, 0)
         cutout_img_id: Optional[int] = None
+        corner_item_ids: dict[str, Optional[int]] = {"nw": None, "ne": None, "sw": None, "se": None}
+        badge_img_id: Optional[int] = None
+        badge_txt_id: Optional[int] = None
+        last_cutout_time: list[float] = [0.0]
         active_card_win: list[Optional[int]] = [None]
         active_controller: list[Optional[RoundedCardController]] = [None]
         hud_window_id: Optional[int] = None
@@ -341,6 +348,17 @@ class ScreenAreaSelector:
         cached_ai_session: list[Optional[GeminiChatSession]] = [None]
         cached_ai_box: list[Optional[tuple[int, int, int, int]]] = [None]
         shot_ref: list[Optional[ScreenshotResult]] = [None]
+        preemptive_task_id: list[int] = [0]
+        pending_action: list[Optional[str]] = [None]
+
+        def clear_corners_and_badge():
+            nonlocal badge_img_id, badge_txt_id
+            canvas.delete("lens_corners")
+            canvas.delete("lens_badge")
+            for k in corner_item_ids:
+                corner_item_ids[k] = None
+            badge_img_id = None
+            badge_txt_id = None
 
         def show_copied_toast(msg: str = "✓ Скопировано в буфер!"):
             tx = box[0] + (box[2] - box[0]) // 2 if box else vw // 2
@@ -398,6 +416,8 @@ class ScreenAreaSelector:
                 active_controller[0] = None
 
         def invalidate_ocr_cache():
+            preemptive_task_id[0] += 1
+            pending_action[0] = None
             cached_ocr_result[0] = None
             cached_ocr_box[0] = None
             cached_tr_result[0] = None
@@ -408,10 +428,16 @@ class ScreenAreaSelector:
             if text_layer.is_active:
                 text_layer.hide()
 
-        def update_cutout_preview(bx1: int, by1: int, bx2: int, by2: int):
+        def update_cutout_preview(bx1: int, by1: int, bx2: int, by2: int, force: bool = False):
             nonlocal cutout_img_id
             if not full_desktop_img:
                 return
+            now = time.perf_counter()
+            if not force and (now - last_cutout_time[0] < 0.016):
+                if cutout_img_id is not None:
+                    canvas.coords(cutout_img_id, bx1, by1)
+                return
+            last_cutout_time[0] = now
             w = max(1, bx2 - bx1)
             h = max(1, by2 - by1)
             cropped = full_desktop_img.crop((bx1, by1, bx2, by2))
@@ -424,15 +450,19 @@ class ScreenAreaSelector:
             canvas._cutout_photo = cutout_photo
 
         def draw_corners_and_badge(bx1: int, by1: int, bx2: int, by2: int):
-            """Renders the 4 anti-aliased corner sprites and compact top-left dimension badge."""
-            canvas.delete("lens_corners")
-            canvas.delete("lens_badge")
-
-            # 1. Place the 4 smooth anti-aliased corners (ONLY corners, no outer rectangle lines!)
-            canvas.create_image(bx1, by1, image=self._corner_photos["nw"], anchor=tk.NW, tags="lens_corners")
-            canvas.create_image(bx2, by1, image=self._corner_photos["ne"], anchor=tk.NE, tags="lens_corners")
-            canvas.create_image(bx1, by2, image=self._corner_photos["sw"], anchor=tk.SW, tags="lens_corners")
-            canvas.create_image(bx2, by2, image=self._corner_photos["se"], anchor=tk.SE, tags="lens_corners")
+            """Renders or updates the 4 anti-aliased corner sprites and compact top-left dimension badge."""
+            nonlocal badge_img_id, badge_txt_id
+            # 1. Place or reposition the 4 smooth anti-aliased corners
+            if corner_item_ids["nw"] is None:
+                corner_item_ids["nw"] = canvas.create_image(bx1, by1, image=self._corner_photos["nw"], anchor=tk.NW, tags="lens_corners")
+                corner_item_ids["ne"] = canvas.create_image(bx2, by1, image=self._corner_photos["ne"], anchor=tk.NE, tags="lens_corners")
+                corner_item_ids["sw"] = canvas.create_image(bx1, by2, image=self._corner_photos["sw"], anchor=tk.SW, tags="lens_corners")
+                corner_item_ids["se"] = canvas.create_image(bx2, by2, image=self._corner_photos["se"], anchor=tk.SE, tags="lens_corners")
+            else:
+                canvas.coords(corner_item_ids["nw"], bx1, by1)
+                canvas.coords(corner_item_ids["ne"], bx2, by1)
+                canvas.coords(corner_item_ids["sw"], bx1, by2)
+                canvas.coords(corner_item_ids["se"], bx2, by2)
 
             # 2. Compact capsule badge pinned to top-left corner
             w = max(1, bx2 - bx1)
@@ -443,19 +473,25 @@ class ScreenAreaSelector:
 
             badge_photo, bw, bh = render_pill_badge(b_text)
             canvas._current_badge_photo = badge_photo
-            canvas.create_image(badge_x, badge_y, image=badge_photo, anchor=tk.NW, tags="lens_badge")
-            canvas.create_text(
-                badge_x + bw // 2,
-                badge_y + bh // 2,
-                text=b_text,
-                fill="#ffffff",
-                font=("Segoe UI", 8, "bold"),
-                tags="lens_badge",
-            )
 
-        def crop_and_save_current_selection() -> tuple[Path, ScreenshotResult]:
-            nonlocal box
-            bx1, by1, bx2, by2 = box if box else (0, 0, 100, 100)
+            if badge_img_id is None:
+                badge_img_id = canvas.create_image(badge_x, badge_y, image=badge_photo, anchor=tk.NW, tags="lens_badge")
+                badge_txt_id = canvas.create_text(
+                    badge_x + bw // 2,
+                    badge_y + bh // 2,
+                    text=b_text,
+                    fill="#ffffff",
+                    font=("Segoe UI", 8, "bold"),
+                    tags="lens_badge",
+                )
+            else:
+                canvas.coords(badge_img_id, badge_x, badge_y)
+                canvas.itemconfig(badge_img_id, image=badge_photo)
+                canvas.coords(badge_txt_id, badge_x + bw // 2, badge_y + bh // 2)
+                canvas.itemconfig(badge_txt_id, text=b_text)
+
+        def crop_and_save_current_selection(target_box: Optional[tuple[int, int, int, int]] = None) -> tuple[Path, ScreenshotResult]:
+            bx1, by1, bx2, by2 = target_box if target_box is not None else (box if box else (0, 0, 100, 100))
             tf = tempfile.NamedTemporaryFile(prefix="screenlens_", suffix=".png", delete=False)
             t_path = Path(tf.name)
             tf.close()
@@ -480,6 +516,112 @@ class ScreenAreaSelector:
                 shot = grabber.capture(area)
 
             return t_path, shot
+
+        def start_preemptive_pipeline(target_box: tuple[int, int, int, int]):
+            if not target_box:
+                return
+            preemptive_task_id[0] += 1
+            current_task = preemptive_task_id[0]
+
+            def pipeline_worker():
+                if is_destroyed.is_set() or current_task != preemptive_task_id[0]:
+                    return
+                t_path, shot = crop_and_save_current_selection(target_box)
+                if current_task != preemptive_task_id[0]:
+                    return
+                shot_ref[0] = shot
+
+                # 1. Background OCR
+                try:
+                    ocr_lang = settings.ocr_lang if settings else "rus+eng"
+                    ocr_eng = settings.ocr_engine if settings else "auto"
+                    engine = create_ocr_engine(engine_name=ocr_eng, language=ocr_lang, logger=self._logger)
+                    res = engine.recognize(shot.image_path)
+                except Exception as exc:
+                    self._logger.error("Preemptive OCR recognition error: %s", exc)
+                    res = OCRResult(
+                        raw_text=f"[Ошибка OCR: {exc}]",
+                        cleaned_text="",
+                        image_path=shot.image_path,
+                    )
+
+                if current_task != preemptive_task_id[0]:
+                    return
+
+                cached_ocr_result[0] = res
+                cached_ocr_box[0] = target_box
+
+                def on_ocr_done():
+                    if is_destroyed.is_set() or current_task != preemptive_task_id[0]:
+                        return
+                    if pending_action[0] == "text":
+                        pending_action[0] = None
+                        hide_ocr_loading_indicator()
+                        if box == target_box:
+                            crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
+                            text_layer.load_from_ocr(
+                                res,
+                                box,
+                                crop_img=crop_pil,
+                                cutout_item_id=cutout_img_id,
+                                original_crop_photo=getattr(canvas, "_cutout_photo", None),
+                            )
+                            text_layer.show()
+                            nonlocal current_state
+                            current_state = "text_select"
+                            if clipboard and settings and getattr(settings, "auto_copy", False) and res.cleaned_text:
+                                clipboard.copy(res.cleaned_text)
+                            if db and res.cleaned_text:
+                                db.add_history(image_path=str(shot.image_path), ocr_text=res.cleaned_text)
+
+                post_to_ui(on_ocr_done)
+
+                # 2. Chained Preemptive Translation
+                target = settings.translate_lang if settings else "ru"
+                raw_text = res.cleaned_text
+                if raw_text:
+                    try:
+                        tr_text = translate_text(raw_text, target_lang=target, logger=self._logger)
+                    except Exception as exc:
+                        self._logger.error("Preemptive translation error: %s", exc)
+                        tr_text = f"[Ошибка перевода: {exc}]"
+                else:
+                    tr_text = "[Нет текста для перевода]"
+
+                if current_task != preemptive_task_id[0]:
+                    return
+
+                cached_tr_result[0] = tr_text
+                cached_tr_lang[0] = target
+                cached_tr_box[0] = target_box
+
+                def on_tr_done():
+                    if is_destroyed.is_set() or current_task != preemptive_task_id[0]:
+                        return
+                    if pending_action[0] == "translate":
+                        pending_action[0] = None
+                        hide_ocr_loading_indicator()
+                        if box == target_box:
+                            crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
+                            text_layer.load_translation(
+                                res,
+                                tr_text,
+                                box,
+                                crop_img=crop_pil,
+                                cutout_item_id=cutout_img_id,
+                                original_crop_photo=getattr(canvas, "_cutout_photo", None),
+                            )
+                            text_layer.show()
+                            nonlocal current_state
+                            current_state = "translate_select"
+                            if clipboard and settings and getattr(settings, "auto_copy", False) and tr_text:
+                                clipboard.copy(tr_text)
+                            if db and raw_text:
+                                db.add_history(image_path=str(shot.image_path), ocr_text=raw_text, translated_text=tr_text)
+
+                post_to_ui(on_tr_done)
+
+            threading.Thread(target=pipeline_worker, daemon=True).start()
 
         # Action callbacks for HUD
         def action_text():
@@ -511,51 +653,9 @@ class ScreenAreaSelector:
                 current_state = "text_select"
                 return
 
-            t_path, shot = crop_and_save_current_selection()
-            shot_ref[0] = shot
-            show_ocr_loading_indicator()
-
-            def ocr_worker():
-                try:
-                    ocr_lang = settings.ocr_lang if settings else "rus+eng"
-                    ocr_eng = settings.ocr_engine if settings else "auto"
-                    engine = create_ocr_engine(engine_name=ocr_eng, language=ocr_lang, logger=self._logger)
-                    res = engine.recognize(shot.image_path)
-                except Exception as exc:
-                    self._logger.error("Windows Media OCR recognition error: %s", exc)
-                    res = OCRResult(
-                        raw_text=f"[Ошибка OCR: {exc}]",
-                        cleaned_text="",
-                        image_path=shot.image_path,
-                    )
-
-                def on_ocr_done():
-                    if is_destroyed.is_set():
-                        return
-                    hide_ocr_loading_indicator()
-                    cached_ocr_result[0] = res
-                    cached_ocr_box[0] = box
-                    if box is not None:
-                        crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
-                        text_layer.load_from_ocr(
-                            res,
-                            box,
-                            crop_img=crop_pil,
-                            cutout_item_id=cutout_img_id,
-                            original_crop_photo=getattr(canvas, "_cutout_photo", None),
-                        )
-                        text_layer.show()
-                        nonlocal current_state
-                        current_state = "text_select"
-
-                        if clipboard and settings and getattr(settings, "auto_copy", False) and res.cleaned_text:
-                            clipboard.copy(res.cleaned_text)
-                        if db and res.cleaned_text:
-                            db.add_history(image_path=str(shot.image_path), ocr_text=res.cleaned_text)
-
-                post_to_ui(on_ocr_done)
-
-            threading.Thread(target=ocr_worker, daemon=True).start()
+            # Background OCR still processing
+            pending_action[0] = "text"
+            show_ocr_loading_indicator("Распознавание текста...")
 
         def action_translate():
             nonlocal current_state
@@ -594,67 +694,9 @@ class ScreenAreaSelector:
                 current_state = "translate_select"
                 return
 
-            t_path, shot = crop_and_save_current_selection()
-            shot_ref[0] = shot
+            # Background translation still processing
+            pending_action[0] = "translate"
             show_ocr_loading_indicator("Перевод текста...")
-
-            def tr_worker():
-                try:
-                    ocr_res = None
-                    if cached_ocr_box[0] == box and cached_ocr_result[0] is not None:
-                        ocr_res = cached_ocr_result[0]
-                    else:
-                        ocr_lang = settings.ocr_lang if settings else "rus+eng"
-                        ocr_eng = settings.ocr_engine if settings else "auto"
-                        engine = create_ocr_engine(engine_name=ocr_eng, language=ocr_lang, logger=self._logger)
-                        ocr_res = engine.recognize(shot.image_path)
-                        cached_ocr_result[0] = ocr_res
-                        cached_ocr_box[0] = box
-
-                    raw_text = ocr_res.cleaned_text
-                    if raw_text:
-                        tr_text = translate_text(raw_text, target_lang=target, logger=self._logger)
-                    else:
-                        tr_text = "[Нет текста для перевода]"
-                except Exception as exc:
-                    self._logger.error("Ошибка распознавания или перевода: %s", exc)
-                    if ocr_res is None:
-                        ocr_res = OCRResult(
-                            raw_text=f"[Ошибка: {exc}]",
-                            cleaned_text="",
-                            image_path=shot.image_path,
-                        )
-                    tr_text = f"[Ошибка перевода: {exc}]"
-
-                def on_tr_done():
-                    if is_destroyed.is_set():
-                        return
-                    hide_ocr_loading_indicator()
-                    cached_tr_result[0] = tr_text
-                    cached_tr_lang[0] = target
-                    cached_tr_box[0] = box
-                    if box is not None:
-                        crop_pil = full_desktop_img.crop(box).convert("RGB") if full_desktop_img and box else None
-                        text_layer.load_translation(
-                            ocr_res,
-                            tr_text,
-                            box,
-                            crop_img=crop_pil,
-                            cutout_item_id=cutout_img_id,
-                            original_crop_photo=getattr(canvas, "_cutout_photo", None),
-                        )
-                        text_layer.show()
-                        nonlocal current_state
-                        current_state = "translate_select"
-
-                        if clipboard and settings and getattr(settings, "auto_copy", False) and tr_text:
-                            clipboard.copy(tr_text)
-                        if db and raw_text:
-                            db.add_history(image_path=str(shot.image_path), ocr_text=raw_text, translated_text=tr_text)
-
-                post_to_ui(on_tr_done)
-
-            threading.Thread(target=tr_worker, daemon=True).start()
 
         def action_lens():
             clear_active_card()
@@ -667,34 +709,50 @@ class ScreenAreaSelector:
             safe_close_overlay(delay_ms=80)
 
         def action_ai():
+            # Toggle off if AI card is already active
+            if active_controller[0] is not None and lens_hud.active_mode == "ai":
+                clear_active_card()
+                lens_hud.reset_active_mode()
+                return
+
             clear_active_card()
             lens_hud.set_active_mode("ai")
             if box is None:
                 return
 
-            t_path, shot = crop_and_save_current_selection()
-            shot_ref[0] = shot
-            crop_pil = full_desktop_img.crop(box).convert("RGB") if (full_desktop_img and box) else None
+            bcx = (box[0] + box[2]) // 2
+            bcy = (box[1] + box[3]) // 2
+            mon_bounds = get_monitor_bounds(bcx, bcy, vx, vy, vw, vh)
 
-            # Retrieve existing OCR text as grounding context if available for this box
-            supplementary_ocr = ""
-            if cached_ocr_box[0] == box and cached_ocr_result[0] is not None:
-                supplementary_ocr = cached_ocr_result[0].cleaned_text or ""
+            crop_pil = full_desktop_img.crop(box).convert("RGB") if (full_desktop_img and box) else None
 
             # Check if an existing chat session for this exact box is cached
             session = None
             if cached_ai_box[0] == box and cached_ai_session[0] is not None:
                 session = cached_ai_session[0]
             else:
+                if shot_ref[0] and cached_ocr_box[0] == box:
+                    shot = shot_ref[0]
+                else:
+                    t_path, shot = crop_and_save_current_selection()
+                    shot_ref[0] = shot
+
+                # Retrieve existing OCR text as grounding context if available for this box
+                supplementary_ocr = ""
+                if cached_ocr_box[0] == box and cached_ocr_result[0] is not None:
+                    supplementary_ocr = cached_ocr_result[0].cleaned_text or ""
+
                 fresh_settings = db.get_settings() if db else (settings or None)
                 g_key = (fresh_settings.gemini_api_key if fresh_settings else "").strip()
                 g_model = (fresh_settings.gemini_model if fresh_settings else "") or "gemini-3.5-flash-lite"
+                g_url = (getattr(fresh_settings, "ai_api_url", "") if fresh_settings else "").strip()
                 g_proxy = (fresh_settings.gemini_proxy if fresh_settings else "").strip()
                 g_dns_ai = fresh_settings.gemini_use_dns_ai if fresh_settings else True
 
                 client = GeminiVisionClient(
                     api_key=g_key or None,
                     model=g_model,
+                    api_url=g_url or None,
                     proxy_url=g_proxy or None,
                     use_dns_ai=g_dns_ai,
                     logger=self._logger,
@@ -719,6 +777,7 @@ class ScreenAreaSelector:
                 pad_y=14,
                 radius=20,
                 placement_mode="side_right",
+                monitor_bounds=mon_bounds,
             )
             active_controller[0] = controller
 
@@ -798,22 +857,35 @@ class ScreenAreaSelector:
             if box is None:
                 return
             hw, hh = lens_hud.get_dimensions()
-            target_hx, target_hy = get_hud_placement(box[0], box[1], box[2], box[3], hw, hh, vw, vh, margin=14)
+            bcx = (box[0] + box[2]) // 2
+            bcy = (box[1] + box[3]) // 2
+            mon_bounds = get_monitor_bounds(bcx, bcy, vx, vy, vw, vh)
+            target_hx, target_hy = get_hud_placement(
+                box[0], box[1], box[2], box[3], hw, hh, vw, vh, margin=14, monitor_bounds=mon_bounds
+            )
 
             if not animate:
-                lens_hud.draw(target_hx, target_hy)
+                lens_hud.move_to(target_hx, target_hy)
+                canvas.tag_raise("lens_hud")
+                canvas.tag_raise("lens_hud_hover")
             else:
-                start_hy = min(vh - hh - 14, target_hy + 8)
+                mon_y2 = mon_bounds[3] if mon_bounds else vh
+                start_hy = min(mon_y2 - hh - 14, target_hy + 8)
 
                 def slide_step(step=0):
                     if is_destroyed.is_set() or box is None:
                         return
                     curr_y = start_hy - int((start_hy - target_hy) * (step / 3.0))
-                    lens_hud.draw(target_hx, curr_y)
+                    lens_hud.move_to(target_hx, curr_y)
+                    canvas.tag_raise("lens_hud")
+                    canvas.tag_raise("lens_hud_hover")
                     if step < 3:
                         root.after(20, lambda: slide_step(step + 1))
 
                 slide_step(1)
+
+            canvas.tag_raise("lens_hud")
+            canvas.tag_raise("lens_hud_hover")
 
         # Mouse Event Handlers
         def on_press(event: tk.Event) -> None:
@@ -856,8 +928,7 @@ class ScreenAreaSelector:
                     if cutout_img_id is not None:
                         canvas.delete(cutout_img_id)
                         cutout_img_id = None
-                    canvas.delete("lens_corners")
-                    canvas.delete("lens_badge")
+                    clear_corners_and_badge()
                     lens_hud.hide()
                     box = None
 
@@ -869,8 +940,7 @@ class ScreenAreaSelector:
             if cutout_img_id is not None:
                 canvas.delete(cutout_img_id)
                 cutout_img_id = None
-            canvas.delete("lens_corners")
-            canvas.delete("lens_badge")
+            clear_corners_and_badge()
             lens_hud.hide()
 
         def on_drag(event: tk.Event) -> None:
@@ -913,23 +983,26 @@ class ScreenAreaSelector:
                     if cutout_img_id is not None:
                         canvas.delete(cutout_img_id)
                         cutout_img_id = None
-                    canvas.delete("lens_corners")
-                    canvas.delete("lens_badge")
+                    clear_corners_and_badge()
                     lens_hud.hide()
                     box = None
                     current_state = "idle"
                     return
 
                 current_state = "adjusting"
+                update_cutout_preview(box[0], box[1], box[2], box[3], force=True)
                 draw_corners_and_badge(box[0], box[1], box[2], box[3])
                 position_hud(animate=True)
+                start_preemptive_pipeline(box)
 
             elif current_state == "dragging":
                 current_state = "adjusting"
                 drag_handle = "none"
                 if box is not None:
+                    update_cutout_preview(box[0], box[1], box[2], box[3], force=True)
                     draw_corners_and_badge(box[0], box[1], box[2], box[3])
                     position_hud(animate=False)
+                    start_preemptive_pipeline(box)
 
         def on_motion(event: tk.Event) -> None:
             if lens_hud.is_inside(event.x, event.y):

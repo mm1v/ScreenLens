@@ -1,4 +1,7 @@
+import ctypes
+import functools
 import math
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk
@@ -11,6 +14,57 @@ from core.clipboard import ClipboardManager
 from core.gemini import GeminiVisionClient
 
 
+def get_monitor_bounds(
+    cx: int,
+    cy: int,
+    vx: int = 0,
+    vy: int = 0,
+    fallback_w: int = 1920,
+    fallback_h: int = 1080,
+) -> tuple[int, int, int, int]:
+    """Returns the (x1, y1, x2, y2) work area bounds (in canvas coordinates)
+    of the monitor containing the point (cx, cy).
+    Excludes the Windows taskbar so floating UI elements never slip under it.
+    """
+    if sys.platform == "win32":
+        try:
+            from ctypes import wintypes
+
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ("left", wintypes.LONG),
+                    ("top", wintypes.LONG),
+                    ("right", wintypes.LONG),
+                    ("bottom", wintypes.LONG),
+                ]
+
+            class MONITORINFO(ctypes.Structure):
+                _fields_ = [
+                    ("cbSize", wintypes.DWORD),
+                    ("rcMonitor", RECT),
+                    ("rcWork", RECT),
+                    ("dwFlags", wintypes.DWORD),
+                ]
+
+            user32 = ctypes.windll.user32
+            pt = wintypes.POINT(int(vx + cx), int(vy + cy))
+            hmon = user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTONEAREST = 2
+            if hmon:
+                info = MONITORINFO()
+                info.cbSize = ctypes.sizeof(MONITORINFO)
+                if user32.GetMonitorInfoW(hmon, ctypes.byref(info)):
+                    return (
+                        info.rcWork.left - vx,
+                        info.rcWork.top - vy,
+                        info.rcWork.right - vx,
+                        info.rcWork.bottom - vy,
+                    )
+        except Exception:
+            pass
+
+    return (0, 0, fallback_w, fallback_h)
+
+
 def get_hud_placement(
     x1: int,
     y1: int,
@@ -21,20 +75,34 @@ def get_hud_placement(
     screen_w: int = 1920,
     screen_h: int = 1080,
     margin: int = 14,
+    monitor_bounds: Optional[tuple[int, int, int, int]] = None,
 ) -> tuple[int, int]:
-    """Calculates anchored HUD position: centered below selection if room, else above; clamped to screen."""
-    # 1. Horizontal: strictly centered relative to selection
-    hx = x1 + ((x2 - x1) - hud_w) // 2
-    hx = max(margin, min(screen_w - hud_w - margin, hx))
+    """Calculates anchored HUD position: centered below selection if room, else above;
+    if neither fits outside, positions inside the selection over the selected zone with safe padding.
+    When monitor_bounds is provided, respects the active monitor's work area boundaries (excluding taskbar)."""
+    if monitor_bounds is not None:
+        mon_x1, mon_y1, mon_x2, mon_y2 = monitor_bounds
+    else:
+        mon_x1, mon_y1, mon_x2, mon_y2 = 0, 0, screen_w, screen_h
 
-    # 2. Vertical: prefer below selection with clean gap
-    hy = y2 + margin
-    if hy + hud_h + margin > screen_h:
-        # Not enough room below -> place above selection
+    # 1. Horizontal: strictly centered relative to selection, clamped within active monitor
+    hx = x1 + ((x2 - x1) - hud_w) // 2
+    hx = max(mon_x1 + margin, min(mon_x2 - hud_w - margin, hx))
+
+    # 2. Vertical:
+    # Prefer below selection with clean gap if it fits on the monitor's work area
+    if y2 + margin + hud_h + margin <= mon_y2:
+        hy = y2 + margin
+    elif y1 - hud_h - margin >= mon_y1 + margin:
+        # Not enough room below -> place above selection if room
         hy = y1 - hud_h - margin
-        if hy < margin:
-            # Huge selection occupying screen -> place inside at bottom
-            hy = max(margin, min(screen_h - hud_h - margin, y2 - hud_h - margin))
+    else:
+        # Huge selection occupying almost the entire screen / full screen selection:
+        # Display inside the selected zone (поверх выделенной зоны) near the bottom,
+        # with safe clearance above the active monitor's bottom edge / Windows taskbar.
+        inside_bottom_margin = 36
+        hy = min(y2 - hud_h - 20, mon_y2 - hud_h - inside_bottom_margin)
+        hy = max(y1 + 10, max(mon_y1 + margin, hy))
 
     return hx, hy
 
@@ -52,19 +120,26 @@ def get_card_placement(
     margin: int = 14,
     gap: int = 14,
     placement_mode: str = "auto",
+    monitor_bounds: Optional[tuple[int, int, int, int]] = None,
 ) -> tuple[int, int]:
     """Calculates safe placement for result card.
     If placement_mode == 'side_right', positions card to the right of the selection box if it fits;
     if there is not enough room on the right, positions it inside the selection box.
+    When monitor_bounds is provided, respects the active monitor's work area boundaries (excluding taskbar).
     """
+    if monitor_bounds is not None:
+        mon_x1, mon_y1, mon_x2, mon_y2 = monitor_bounds
+    else:
+        mon_x1, mon_y1, mon_x2, mon_y2 = 0, 0, screen_w, screen_h
+
     bx1, by1, bx2, by2 = box
 
     if placement_mode == "side_right":
-        # 1. Check if card fits to the right of the selection box
+        # 1. Check if card fits to the right of the selection box on the current monitor
         right_x = bx2 + gap
-        if right_x + card_w + margin <= screen_w:
+        if right_x + card_w + margin <= mon_x2:
             cx = right_x
-            cy = max(margin, min(screen_h - card_h - margin, by1))
+            cy = max(mon_y1 + margin, min(mon_y2 - card_h - margin, by1))
             return cx, cy
 
         # 2. Not enough room on the right -> place inside the selection frame
@@ -74,48 +149,46 @@ def get_card_placement(
         if box_w >= card_w + 16:
             cx = bx2 - card_w - 10
         else:
-            cx = max(margin, min(screen_w - card_w - margin, bx1 + (box_w - card_w) // 2))
+            cx = max(mon_x1 + margin, min(mon_x2 - card_w - margin, bx1 + (box_w - card_w) // 2))
 
-        if box_h >= card_h + 16:
-            cy = by1 + 10
-        else:
-            cy = max(margin, min(screen_h - card_h - margin, by1 + 10))
+        cy = by1 + 10
+        cy = max(mon_y1 + margin, min(mon_y2 - card_h - margin, cy))
 
         return cx, cy
 
-    # 1. Center horizontally relative to selection, clamped to margins
+    # 1. Center horizontally relative to selection, clamped to monitor margins
     cx = bx1 + ((bx2 - bx1) - card_w) // 2
-    cx = max(margin, min(screen_w - card_w - margin, cx))
+    cx = max(mon_x1 + margin, min(mon_x2 - card_w - margin, cx))
 
     # 2. Vertical: never overlap the HUD bar
     hud_is_below = hud_y >= by2
     if hud_is_below:
         # HUD is below selection. Try placing card directly below the HUD bar:
         cy = hud_y + hud_h + gap
-        if cy + card_h + margin <= screen_h:
+        if cy + card_h + margin <= mon_y2:
             return cx, cy
 
         # Not enough room below HUD -> place card above the selection box:
         cy = by1 - card_h - gap
-        if cy >= margin:
+        if cy >= mon_y1 + margin:
             return cx, cy
 
         # Extremely tall selection: place card above HUD or clamped
-        cy = max(margin, min(screen_h - card_h - margin, hud_y - card_h - gap))
+        cy = max(mon_y1 + margin, min(mon_y2 - card_h - margin, hud_y - card_h - gap))
         return cx, cy
     else:
         # HUD is above selection. Try placing card directly above HUD:
         cy = hud_y - card_h - gap
-        if cy >= margin:
+        if cy >= mon_y1 + margin:
             return cx, cy
 
         # Not enough room above HUD -> place card below the selection box:
         cy = by2 + gap
-        if cy + card_h + margin <= screen_h:
+        if cy + card_h + margin <= mon_y2:
             return cx, cy
 
         # Extremely tall selection: clamp below selection
-        cy = max(margin, min(screen_h - card_h - margin, by2 + gap))
+        cy = max(mon_y1 + margin, min(mon_y2 - card_h - margin, by2 + gap))
         return cx, cy
 
 
@@ -272,6 +345,7 @@ def render_lens_corners(
     }
 
 
+@functools.lru_cache(maxsize=128)
 def render_capsule_image(
     w: int,
     h: int,
@@ -296,6 +370,7 @@ def render_capsule_image(
     return im.resize((w, h), Image.Resampling.LANCZOS)
 
 
+@functools.lru_cache(maxsize=32)
 def render_rounded_rect_image(
     w: int,
     h: int,
@@ -321,18 +396,26 @@ def render_rounded_rect_image(
     return im.resize((w, h), Image.Resampling.LANCZOS)
 
 
+_pill_badge_cache: dict[tuple[int, int], ImageTk.PhotoImage] = {}
+
+
 def render_pill_badge(text: str, h: int = 22) -> tuple[ImageTk.PhotoImage, int, int]:
     """Generates a compact anti-aliased stadium capsule badge PhotoImage for dimension display."""
     char_w = 7
     w = max(50, len(text) * char_w + 16)
-    img = render_capsule_image(
-        w,
-        h,
-        fill=(26, 28, 30, 240),
-        outline=(62, 65, 71, 255),
-        outline_width=1.0,
-    )
-    return ImageTk.PhotoImage(img), w, h
+    key = (w, h)
+    photo = _pill_badge_cache.get(key)
+    if photo is None:
+        img = render_capsule_image(
+            w,
+            h,
+            fill=(26, 28, 30, 240),
+            outline=(62, 65, 71, 255),
+            outline_width=1.0,
+        )
+        photo = ImageTk.PhotoImage(img)
+        _pill_badge_cache[key] = photo
+    return photo, w, h
 
 
 def calc_pill_width(text: str, min_w: int = 84, pad: int = 28, font_spec: tuple = ("Segoe UI", 9, "bold")) -> int:
@@ -400,6 +483,7 @@ class RoundedCardController:
         outline_color: tuple[int, int, int, int] = (70, 74, 82, 255),
         bg_hex: str = "#222428",
         placement_mode: str = "auto",
+        monitor_bounds: Optional[tuple[int, int, int, int]] = None,
     ) -> None:
         self.canvas = canvas
         self.box = box
@@ -414,6 +498,7 @@ class RoundedCardController:
         self.outline_color = outline_color
         self.bg_hex = bg_hex
         self.placement_mode = placement_mode
+        self.monitor_bounds = monitor_bounds
 
         # Pre-calculate estimated placement immediately below the HUD (NEVER at 0, 0!)
         self.card_w = min_w
@@ -432,6 +517,7 @@ class RoundedCardController:
             margin=14,
             gap=14,
             placement_mode=self.placement_mode,
+            monitor_bounds=self.monitor_bounds,
         )
         self.bg_photo: Optional[ImageTk.PhotoImage] = None
 
@@ -454,7 +540,14 @@ class RoundedCardController:
         req_h = self.content_frame.winfo_reqheight()
 
         actual_w = max(self.min_w, min(self.max_w, req_w + 2 * self.pad_x))
-        actual_h = max(100, req_h + 2 * self.pad_y)
+        if self.monitor_bounds:
+            mon_x1, mon_y1, mon_x2, mon_y2 = self.monitor_bounds
+        else:
+            mon_x1, mon_y1, mon_x2, mon_y2 = 0, 0, self.screen_w, self.screen_h
+
+        # Cap max card height to 95% of available space on active monitor
+        max_allowed_h = int((mon_y2 - mon_y1 - 28) * 0.95)
+        actual_h = max(100, min(req_h + 2 * self.pad_y, max_allowed_h))
 
         self.card_w = actual_w
         self.card_h = actual_h
@@ -473,7 +566,10 @@ class RoundedCardController:
             margin=14,
             gap=14,
             placement_mode=self.placement_mode,
+            monitor_bounds=self.monitor_bounds,
         )
+        if self.cy + self.card_h > mon_y2 - 14:
+            self.cy = max(mon_y1 + 14, mon_y2 - self.card_h - 14)
 
         bg_img = render_rounded_rect_image(
             self.card_w,
@@ -494,14 +590,28 @@ class RoundedCardController:
         self.canvas.coords(self.win_id, self.cx + self.pad_x, self.cy + self.pad_y)
         self.canvas.itemconfigure(self.win_id, width=inner_w, height=inner_h)
 
+        # Raise above cutout and selection mask
+        self.canvas.tag_raise(self.bg_id)
+        self.canvas.tag_raise(self.win_id)
+
         # Reveal at final placement with zero flicker
         self.canvas.itemconfigure(self.bg_id, state="normal")
         self.canvas.itemconfigure(self.win_id, state="normal")
 
     def destroy(self) -> None:
         """Removes card and cleans up canvas objects."""
+        if hasattr(self, "ai_panel") and self.ai_panel and hasattr(self.ai_panel, "destroy"):
+            try:
+                self.ai_panel.destroy()
+            except Exception:
+                pass
         self.canvas.delete("active_card")
         self.bg_photo = None
+        if hasattr(self, "content_frame") and self.content_frame.winfo_exists():
+            try:
+                self.content_frame.destroy()
+            except Exception:
+                pass
 
 
 class CapsuleButton(tk.Canvas):
@@ -576,6 +686,7 @@ class CapsuleButton(tk.Canvas):
         self._img_normal = ImageTk.PhotoImage(render_capsule_image(width, height, fill_norm, out_norm, outline_width=1.0))
         self._img_hover = ImageTk.PhotoImage(render_capsule_image(width, height, fill_hov, out_norm, outline_width=1.0))
         self._img_pressed = ImageTk.PhotoImage(render_capsule_image(width, height, fill_press, out_norm, outline_width=1.0))
+        self._img_disabled = ImageTk.PhotoImage(render_capsule_image(width, height, (34, 36, 42, 255), (50, 54, 62, 255), outline_width=1.0))
 
         self.img_id = self.create_image(0, 0, image=self._img_normal, anchor=tk.NW)
         self.txt_id = self.create_text(width // 2, height // 2, text=text, fill=fg_norm, font=font)
@@ -602,7 +713,8 @@ class CapsuleButton(tk.Canvas):
             self._img_normal = ImageTk.PhotoImage(render_capsule_image(self.w, self.h, self._fill_norm, self._out_norm, outline_width=1.0))
             self._img_hover = ImageTk.PhotoImage(render_capsule_image(self.w, self.h, self._fill_hov, self._out_norm, outline_width=1.0))
             self._img_pressed = ImageTk.PhotoImage(render_capsule_image(self.w, self.h, self._fill_press, self._out_norm, outline_width=1.0))
-            current_img = self._img_pressed if self._is_pressed else self._img_normal
+            self._img_disabled = ImageTk.PhotoImage(render_capsule_image(self.w, self.h, (34, 36, 42, 255), (50, 54, 62, 255), outline_width=1.0))
+            current_img = self._img_disabled if self._state == "disabled" else (self._img_pressed if self._is_pressed else self._img_normal)
             self.itemconfig(self.img_id, image=current_img)
             self.coords(self.txt_id, self.w // 2, self.h // 2)
 
@@ -649,10 +761,12 @@ class CapsuleButton(tk.Canvas):
             st = kwargs.pop("state")
             self._state = st
             if st == "disabled":
+                self.itemconfig(self.img_id, image=self._img_disabled)
                 self.itemconfig(self.txt_id, fill="#64748b")
                 self.config_cursor = getattr(self, "config_cursor", self.cget("cursor"))
                 super().config(cursor="arrow")
             else:
+                self.itemconfig(self.img_id, image=self._img_normal)
                 self.itemconfig(self.txt_id, fill=self._fg_norm)
                 super().config(cursor="hand2")
         if kwargs:
@@ -791,9 +905,9 @@ class GoogleLensHUD:
         act_fill = (26, 28, 32, 255)          # High-contrast active container (charcoal)
         act_outline = (96, 102, 116, 255)     # M3 active border
         hov_fill = (54, 57, 65, 210)          # State layer hover
-        hov_outline = (80, 85, 96, 255)
-        danger_hov_fill = (75, 28, 28, 235)   # M3 error container hover
-        danger_hov_outline = (150, 48, 48, 255)
+        hov_outline = (110, 118, 136, 255)    # High-contrast hover outline
+        danger_hov_fill = (80, 28, 28, 235)   # M3 error container hover
+        danger_hov_outline = (225, 65, 65, 255)  # Crisp red error outline
 
         # Pill dimensions per button key: (width, height=50)
         # Stadium capsules matching outer container curvature and with 4px equal padding to the outer edges
@@ -885,10 +999,32 @@ class GoogleLensHUD:
         """Places HUD at given coordinates (alias for draw)."""
         self.draw(x, y)
 
+    def move_to(self, x: int, y: int) -> None:
+        """Moves HUD to given coordinates using canvas.move() without reallocating canvas items."""
+        if not self.is_visible:
+            self.draw(x, y)
+            return
+        dx = x - self.x
+        dy = y - self.y
+        if dx == 0 and dy == 0:
+            self.canvas.tag_raise("lens_hud")
+            self.canvas.tag_raise("lens_hud_hover")
+            return
+        self.x = x
+        self.y = y
+        self.canvas.move("lens_hud", dx, dy)
+        self.canvas.move("lens_hud_hover", dx, dy)
+        self.canvas.tag_raise("lens_hud")
+        self.canvas.tag_raise("lens_hud_hover")
+        self._update_buttons_list()
+
     def show(self) -> None:
         """Shows HUD at current coordinates."""
         if not self.is_visible:
             self.draw(self.x, self.y)
+        else:
+            self.canvas.tag_raise("lens_hud")
+            self.canvas.tag_raise("lens_hud_hover")
 
     def draw(self, x: int, y: int) -> None:
         """Renders or moves the two side-by-side capsules on the Canvas."""
@@ -897,9 +1033,13 @@ class GoogleLensHUD:
         self.canvas.delete("lens_hud")
         self.canvas.delete("lens_hud_hover")
 
-        # 1. Block 1: Actions (configured dynamically according to ai_enabled)
-        self.canvas.create_image(x, y, image=self._cap1_photo, anchor=tk.NW, tags=("lens_hud", "lens_hud_bg"))
+        bx2 = x + self.b1_w + self.gap
 
+        # 1. Backgrounds for BOTH blocks (created first so they are at the bottom of the HUD z-stack)
+        self.canvas.create_image(x, y, image=self._cap1_photo, anchor=tk.NW, tags=("lens_hud", "lens_hud_bg"))
+        self.canvas.create_image(bx2, y, image=self._cap2_photo, anchor=tk.NW, tags=("lens_hud", "lens_hud_bg"))
+
+        # 2. Block 1 Foreground: Actions (configured dynamically according to ai_enabled)
         for key, label in self.b1_items:
             cx_off, _ = self._get_item_layout(key)
             cx = x + cx_off
@@ -918,10 +1058,7 @@ class GoogleLensHUD:
                 tags=("lens_hud", "lens_hud_fg"),
             )
 
-        # 2. Block 2: Management (Копировать, Закрыть)
-        bx2 = x + self.b1_w + self.gap
-        self.canvas.create_image(bx2, y, image=self._cap2_photo, anchor=tk.NW, tags=("lens_hud", "lens_hud_bg"))
-
+        # 3. Block 2 Foreground: Management (Копировать, Закрыть)
         # Copy
         cx_off_copy, _ = self._get_item_layout("copy")
         cx_copy = bx2 + cx_off_copy
@@ -955,6 +1092,8 @@ class GoogleLensHUD:
         )
 
         self.is_visible = True
+        self.canvas.tag_raise("lens_hud")
+        self.canvas.tag_raise("lens_hud_hover")
         self._update_buttons_list()
 
     def hide(self) -> None:

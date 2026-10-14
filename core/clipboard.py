@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 import sys
+import time
 import tkinter as tk
 from typing import Any, Optional
 
@@ -155,7 +156,14 @@ def copy_image_to_clipboard(image_or_path: Any) -> bool:
         ctypes.memmove(p_mem, bmp_data, len(bmp_data))
         k32.GlobalUnlock(h_mem)
 
-        if not u32.OpenClipboard(None):
+        opened = False
+        for _ in range(10):
+            if u32.OpenClipboard(None):
+                opened = True
+                break
+            time.sleep(0.03)
+        if not opened:
+            k32.GlobalFree(h_mem)
             return False
 
         try:
@@ -169,6 +177,64 @@ def copy_image_to_clipboard(image_or_path: Any) -> bool:
         return False
 
 
+def set_clipboard_text_win32(text: str) -> bool:
+    """Sets Unicode text directly to Windows clipboard with retry backoff to avoid lock contention."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.windll.kernel32
+        u32 = ctypes.windll.user32
+
+        k32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        k32.GlobalAlloc.restype = wintypes.HGLOBAL
+        k32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        k32.GlobalLock.restype = ctypes.c_void_p
+        k32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        k32.GlobalUnlock.restype = wintypes.BOOL
+        k32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        k32.GlobalFree.restype = wintypes.HGLOBAL
+
+        u32.OpenClipboard.argtypes = [wintypes.HWND]
+        u32.OpenClipboard.restype = wintypes.BOOL
+        u32.EmptyClipboard.argtypes = []
+        u32.EmptyClipboard.restype = wintypes.BOOL
+        u32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        u32.SetClipboardData.restype = wintypes.HANDLE
+        u32.CloseClipboard.argtypes = []
+        u32.CloseClipboard.restype = wintypes.BOOL
+
+        opened = False
+        for _ in range(10):
+            if u32.OpenClipboard(None):
+                opened = True
+                break
+            time.sleep(0.03)
+        if not opened:
+            return False
+
+        try:
+            data = (text + "\0").encode("utf-16le")
+            h_mem = k32.GlobalAlloc(0x0002, len(data))
+            if not h_mem:
+                return False
+            p_mem = k32.GlobalLock(h_mem)
+            if not p_mem:
+                k32.GlobalFree(h_mem)
+                return False
+            ctypes.memmove(p_mem, data, len(data))
+            k32.GlobalUnlock(h_mem)
+            u32.EmptyClipboard()
+            res = u32.SetClipboardData(13, h_mem)
+            return bool(res)
+        finally:
+            u32.CloseClipboard()
+    except Exception:
+        return False
+
+
 class ClipboardManager:
     """Handles interaction with system clipboard."""
 
@@ -179,13 +245,21 @@ class ClipboardManager:
         """Copies text to system clipboard. Returns True on success."""
         if not text:
             return False
-        try:
-            pyperclip.copy(text)
-            self._logger.info("Текст успешно скопирован в буфер обмена (%d симв.)", len(text))
-            return True
-        except Exception as exc:
-            self._logger.error("Ошибка копирования в буфер обмена: %s", exc)
-            return False
+        if sys.platform == "win32":
+            if set_clipboard_text_win32(text):
+                self._logger.info("Текст успешно скопирован в буфер обмена (%d симв.)", len(text))
+                return True
+        for attempt in range(5):
+            try:
+                pyperclip.copy(text)
+                self._logger.info("Текст успешно скопирован в буфер обмена (%d симв.)", len(text))
+                return True
+            except Exception as exc:
+                if attempt == 4:
+                    self._logger.error("Ошибка копирования в буфер обмена: %s", exc)
+                    return False
+                time.sleep(0.03)
+        return False
 
     def copy_image(self, image_or_path: Any) -> bool:
         """Copies image to system clipboard as CF_DIB."""

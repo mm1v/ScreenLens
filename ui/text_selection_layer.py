@@ -219,6 +219,10 @@ class SelectableTextLayer:
         # Floating copy button bounds: (x1, y1, x2, y2)
         self._btn_rect: Optional[tuple[int, int, int, int]] = None
         self._btn_photo: Optional[ImageTk.PhotoImage] = None
+        self._cached_copy_pill_photo: Optional[ImageTk.PhotoImage] = None
+        self._crop_arr: Optional[np.ndarray] = None
+        self._base_detected_rgba: Optional[Image.Image] = None
+        self._marquee_id: Optional[int] = None
 
     @property
     def segments(self) -> list[TextRegion]:
@@ -245,6 +249,7 @@ class SelectableTextLayer:
         self.translated_text = ""
         self.box = box
         self.crop_img = crop_img.copy() if crop_img else None
+        self._crop_arr = np.array(self.crop_img.convert("RGB")) if self.crop_img else None
         self.cutout_item_id = cutout_item_id
         self.original_crop_photo = original_crop_photo
 
@@ -450,7 +455,9 @@ class SelectableTextLayer:
             cx2 = int(round(rx2 - bx1))
             cy2 = int(round(ry2 - by1))
 
-            arr = np.array(self.crop_img.convert("RGB"))
+            if self._crop_arr is None:
+                self._crop_arr = np.array(self.crop_img.convert("RGB"))
+            arr = self._crop_arr
             h_img, w_img, _ = arr.shape
 
             x1 = max(0, min(w_img - 1, cx1))
@@ -548,6 +555,7 @@ class SelectableTextLayer:
 
                 self._detected_crop_img = Image.alpha_composite(base_rgba, overlay)
                 self._detected_crop_photo = ImageTk.PhotoImage(self._detected_crop_img)
+                self._base_detected_rgba = self._detected_crop_img.convert("RGBA")
                 self.canvas.itemconfig(self.cutout_item_id, image=self._detected_crop_photo)
                 has_blended = True
             except Exception as e:
@@ -599,6 +607,7 @@ class SelectableTextLayer:
         self.translated_text = translated_text
         self.box = box
         self.crop_img = crop_img.copy() if crop_img else None
+        self._crop_arr = np.array(self.crop_img.convert("RGB")) if self.crop_img else None
         self.cutout_item_id = cutout_item_id
         self.original_crop_photo = original_crop_photo
 
@@ -939,6 +948,8 @@ class SelectableTextLayer:
         self._active_crop_photo = None
         self._detected_crop_photo = None
         self._detected_crop_img = None
+        self._base_detected_rgba = None
+        self._marquee_id = None
 
     def clear(self) -> None:
         """Full cleanup."""
@@ -947,11 +958,14 @@ class SelectableTextLayer:
         self.lines.clear()
         self.regions.clear()
         self.crop_img = None
+        self._crop_arr = None
         self.cutout_item_id = None
         self.original_crop_photo = None
         self._active_crop_photo = None
         self._detected_crop_photo = None
         self._detected_crop_img = None
+        self._base_detected_rgba = None
+        self._marquee_id = None
 
     # Hit Testing
     def hit_test_word(self, mx: int, my: int) -> Optional[TextWord]:
@@ -999,12 +1013,14 @@ class SelectableTextLayer:
         bx1, by1, bx2, by2 = self._btn_rect
         return bx1 <= mx <= bx2 and by1 <= my <= by2
 
-    # Selection State Management
     def select_range(self, start_idx: int, end_idx: int) -> None:
         """Selects all words in reading order between start_idx and end_idx."""
         min_i = min(start_idx, end_idx)
         max_i = max(start_idx, end_idx)
-        self.selected_indices = set(range(min_i, max_i + 1))
+        new_indices = set(range(min_i, max_i + 1))
+        if new_indices == self.selected_indices:
+            return
+        self.selected_indices = new_indices
         self.redraw_selection()
 
     def select_all(self) -> None:
@@ -1147,11 +1163,13 @@ class SelectableTextLayer:
 
             if self.crop_img is not None and self.cutout_item_id is not None:
                 try:
-                    base_img = self._detected_crop_img if self._detected_crop_img is not None else self.crop_img
-                    base_rgba = base_img.convert("RGBA")
-                    overlay = Image.new("RGBA", base_rgba.size, (0, 0, 0, 0))
-                    draw = ImageDraw.Draw(overlay)
-                    cw, ch = base_rgba.size
+                    if self._base_detected_rgba is None:
+                        base_img = self._detected_crop_img if self._detected_crop_img is not None else self.crop_img
+                        self._base_detected_rgba = base_img.convert("RGBA")
+
+                    blended = self._base_detected_rgba.copy()
+                    draw = ImageDraw.Draw(blended)
+                    cw, ch = blended.size
 
                     for rx1, ry1, rx2, ry2 in highlight_boxes:
                         cx1 = max(0, min(cw, int(round(rx1 - bx1 - 1))))
@@ -1159,16 +1177,17 @@ class SelectableTextLayer:
                         cx2 = max(0, min(cw, int(round(rx2 - bx1 + 1))))
                         cy2 = max(0, min(ch, int(round(ry2 - by1))))
                         if cx2 > cx1 and cy2 > cy1:
-                            # Soft Google Blue translucent fill with subtle rounded corners
+                            sub = blended.crop((cx1, cy1, cx2, cy2))
+                            ov = Image.new("RGBA", sub.size, (66, 133, 244, 95))
+                            sub = Image.alpha_composite(sub, ov)
+                            blended.paste(sub, (cx1, cy1))
                             draw.rounded_rectangle(
                                 [cx1, cy1, cx2, cy2],
                                 radius=3,
-                                fill=(66, 133, 244, 95),
                                 outline=(66, 133, 244, 160),
                                 width=1,
                             )
 
-                    blended = Image.alpha_composite(base_rgba, overlay)
                     self._active_crop_photo = ImageTk.PhotoImage(blended)
                     self.canvas.itemconfig(self.cutout_item_id, image=self._active_crop_photo)
                     has_blended_bg = True
@@ -1228,14 +1247,16 @@ class SelectableTextLayer:
 
         self._btn_rect = (btn_x1, btn_y1, btn_x2, btn_y2)
 
-        pill_img = render_capsule_image(
-            btn_w,
-            btn_h,
-            fill=(34, 36, 40, 245),
-            outline=(66, 133, 244, 255),
-            outline_width=1.2,
-        )
-        self._btn_photo = ImageTk.PhotoImage(pill_img)
+        if self._cached_copy_pill_photo is None:
+            pill_img = render_capsule_image(
+                btn_w,
+                btn_h,
+                fill=(34, 36, 40, 245),
+                outline=(66, 133, 244, 255),
+                outline_width=1.2,
+            )
+            self._cached_copy_pill_photo = ImageTk.PhotoImage(pill_img)
+        self._btn_photo = self._cached_copy_pill_photo
 
         self.canvas.create_image(
             btn_x1,
@@ -1308,27 +1329,33 @@ class SelectableTextLayer:
         rx2 = max(sx, mx)
         ry2 = max(sy, my)
 
-        self.canvas.delete("ocr_marquee")
-        self.canvas.create_rectangle(
-            rx1, ry1, rx2, ry2,
-            fill="",
-            outline="#4285f4",
-            width=1,
-            dash=(3, 2),
-            tags=(self.TAG_LAYER, "ocr_marquee"),
-        )
+        if self._marquee_id is None:
+            self._marquee_id = self.canvas.create_rectangle(
+                rx1, ry1, rx2, ry2,
+                fill="",
+                outline="#4285f4",
+                width=1,
+                dash=(3, 2),
+                tags=(self.TAG_LAYER, "ocr_marquee"),
+            )
+        else:
+            self.canvas.coords(self._marquee_id, rx1, ry1, rx2, ry2)
 
         new_sel = set()
         for w in self.words:
             if not (w.x2 < rx1 or w.x1 > rx2 or w.y2 < ry1 or w.y1 > ry2):
                 new_sel.add(w.index)
 
-        self.selected_indices = new_sel
-        self.redraw_selection()
+        if new_sel != self.selected_indices:
+            self.selected_indices = new_sel
+            self.redraw_selection()
         return True
 
     def handle_release(self, mx: int, my: int) -> bool:
         """Handles mouse release."""
+        if self._marquee_id is not None:
+            self.canvas.delete(self._marquee_id)
+            self._marquee_id = None
         self.canvas.delete("ocr_marquee")
         self._is_dragging = False
         self._drag_start_xy = None
