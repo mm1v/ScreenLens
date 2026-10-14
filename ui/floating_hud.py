@@ -51,9 +51,37 @@ def get_card_placement(
     screen_h: int = 1080,
     margin: int = 14,
     gap: int = 14,
+    placement_mode: str = "auto",
 ) -> tuple[int, int]:
-    """Calculates safe placement for result card with guaranteed offset from the HUD bar (no overlap)."""
+    """Calculates safe placement for result card.
+    If placement_mode == 'side_right', positions card to the right of the selection box if it fits;
+    if there is not enough room on the right, positions it inside the selection box.
+    """
     bx1, by1, bx2, by2 = box
+
+    if placement_mode == "side_right":
+        # 1. Check if card fits to the right of the selection box
+        right_x = bx2 + gap
+        if right_x + card_w + margin <= screen_w:
+            cx = right_x
+            cy = max(margin, min(screen_h - card_h - margin, by1))
+            return cx, cy
+
+        # 2. Not enough room on the right -> place inside the selection frame
+        box_w = bx2 - bx1
+        box_h = by2 - by1
+
+        if box_w >= card_w + 16:
+            cx = bx2 - card_w - 10
+        else:
+            cx = max(margin, min(screen_w - card_w - margin, bx1 + (box_w - card_w) // 2))
+
+        if box_h >= card_h + 16:
+            cy = by1 + 10
+        else:
+            cy = max(margin, min(screen_h - card_h - margin, by1 + 10))
+
+        return cx, cy
 
     # 1. Center horizontally relative to selection, clamped to margins
     cx = bx1 + ((bx2 - bx1) - card_w) // 2
@@ -185,42 +213,63 @@ def render_monochrome_icons() -> dict[str, Image.Image]:
     return icons
 
 
-def render_lens_corners(size: int = 44, radius: int = 16, leg: int = 34, thickness: int = 3) -> dict[str, Image.Image]:
-    """Generates 4 perfectly smooth, anti-aliased corner sprites (x4 supersampling downscaled with Lanczos)."""
+def render_lens_corners(
+    size: int = 22,
+    radius: int = 4,
+    leg: int = 14,
+    thickness: float = 2.4,
+) -> dict[str, Image.Image]:
+    """Generates 4 pixel-precise, anti-aliased corner brackets with subtle radius and contrast shadow."""
     scale = 4
     s = size * scale
-    r = radius * scale
-    l = leg * scale
+    r = int(radius * scale)
+    l = int(leg * scale)
     th = int(thickness * scale)
-    pad = int((thickness + 2) * scale // 2)
+    pad = int(1.0 * scale)
 
-    corners: dict[str, Image.Image] = {}
-    for c_name in ("nw", "ne", "sw", "se"):
-        im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-        d = ImageDraw.Draw(im)
+    def _draw_nw_corner_mask(w_val: int) -> Image.Image:
+        mask = Image.new("L", (s, s), 0)
+        d_mask = ImageDraw.Draw(mask)
 
-        # 1. Soft dark shadow pass for contrast on any background
-        # 2. Crisp pure white pass
-        for (w, col) in [(th + int(2 * scale), (10, 12, 16, 170)), (th, (255, 255, 255, 255))]:
-            if c_name == "nw":
-                d.arc([pad, pad, pad + 2 * r, pad + 2 * r], start=180, end=270, fill=col, width=w)
-                d.line([pad + r, pad, pad + l, pad], fill=col, width=w)
-                d.line([pad, pad + r, pad, pad + l], fill=col, width=w)
-            elif c_name == "ne":
-                d.arc([s - pad - 2 * r, pad, s - pad, pad + 2 * r], start=270, end=360, fill=col, width=w)
-                d.line([s - pad - l, pad, s - pad - r, pad], fill=col, width=w)
-                d.line([s - pad, pad + r, s - pad, pad + l], fill=col, width=w)
-            elif c_name == "sw":
-                d.arc([pad, s - pad - 2 * r, pad + 2 * r, s - pad], start=90, end=180, fill=col, width=w)
-                d.line([pad + r, s - pad, pad + l, s - pad], fill=col, width=w)
-                d.line([pad, pad + r, pad, pad + l], fill=col, width=w)
-            elif c_name == "se":
-                d.arc([s - pad - 2 * r, s - pad - 2 * r, s - pad, s - pad], start=0, end=90, fill=col, width=w)
-                d.line([s - pad - l, s - pad, s - pad - r, s - pad], fill=col, width=w)
-                d.line([s - pad, s - pad - l, s - pad, s - pad - r], fill=col, width=w)
+        # Horizontal arm
+        d_mask.rectangle([pad + r, pad, pad + l, pad + w_val], fill=255)
+        # Vertical arm
+        d_mask.rectangle([pad, pad + r, pad + w_val, pad + l], fill=255)
+        # Outer rounded corner block
+        d_mask.rounded_rectangle([pad, pad, pad + 2 * r, pad + 2 * r], radius=r, fill=255)
+        # Inner cutout
+        inner_x = pad + w_val
+        inner_y = pad + w_val
+        if r > w_val:
+            d_mask.rounded_rectangle([inner_x, inner_y, pad + 2 * r + 16, pad + 2 * r + 16], radius=r - w_val, fill=0)
+        else:
+            d_mask.rectangle([inner_x, inner_y, pad + 2 * r + 16, pad + 2 * r + 16], fill=0)
 
-        corners[c_name] = im.resize((size, size), Image.Resampling.LANCZOS)
-    return corners
+        return mask
+
+    nw_full = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+
+    # 1. Soft contrast shadow pass behind the corner
+    mask_shadow = _draw_nw_corner_mask(th + int(1.5 * scale))
+    shadow_layer = Image.new("RGBA", (s, s), (10, 12, 16, 190))
+    nw_full.paste(shadow_layer, (0, 0), mask=mask_shadow)
+
+    # 2. Crisp pure white foreground pass
+    mask_fg = _draw_nw_corner_mask(th)
+    fg_layer = Image.new("RGBA", (s, s), (255, 255, 255, 255))
+    nw_full.paste(fg_layer, (0, 0), mask=mask_fg)
+
+    nw_img = nw_full.resize((size, size), Image.Resampling.LANCZOS)
+    ne_img = nw_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    sw_img = nw_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    se_img = nw_img.transpose(Image.Transpose.ROTATE_180)
+
+    return {
+        "nw": nw_img,
+        "ne": ne_img,
+        "sw": sw_img,
+        "se": se_img,
+    }
 
 
 def render_capsule_image(
@@ -342,14 +391,15 @@ class RoundedCardController:
         box: tuple[int, int, int, int],
         hud_pos: tuple[int, int, int, int],
         screen_size: tuple[int, int] = (1920, 1080),
-        min_w: int = 480,
-        max_w: int = 580,
-        pad_x: int = 18,
+        min_w: int = 350,
+        max_w: int = 420,
+        pad_x: int = 14,
         pad_y: int = 14,
-        radius: int = 22,
+        radius: int = 20,
         bg_color: tuple[int, int, int, int] = (34, 36, 40, 255),
         outline_color: tuple[int, int, int, int] = (70, 74, 82, 255),
         bg_hex: str = "#222428",
+        placement_mode: str = "auto",
     ) -> None:
         self.canvas = canvas
         self.box = box
@@ -363,6 +413,7 @@ class RoundedCardController:
         self.bg_color = bg_color
         self.outline_color = outline_color
         self.bg_hex = bg_hex
+        self.placement_mode = placement_mode
 
         # Pre-calculate estimated placement immediately below the HUD (NEVER at 0, 0!)
         self.card_w = min_w
@@ -380,6 +431,7 @@ class RoundedCardController:
             self.screen_h,
             margin=14,
             gap=14,
+            placement_mode=self.placement_mode,
         )
         self.bg_photo: Optional[ImageTk.PhotoImage] = None
 
@@ -420,6 +472,7 @@ class RoundedCardController:
             self.screen_h,
             margin=14,
             gap=14,
+            placement_mode=self.placement_mode,
         )
 
         bg_img = render_rounded_rect_image(
@@ -513,6 +566,13 @@ class CapsuleButton(tk.Canvas):
             out_norm = (75, 80, 90, 255)
             fg_norm = "#ffffff"
 
+        self._fill_norm = fill_norm
+        self._fill_hov = fill_hov
+        self._fill_press = fill_press
+        self._out_norm = out_norm
+        self._fg_norm = fg_norm
+        self._state = "normal"
+
         self._img_normal = ImageTk.PhotoImage(render_capsule_image(width, height, fill_norm, out_norm, outline_width=1.0))
         self._img_hover = ImageTk.PhotoImage(render_capsule_image(width, height, fill_hov, out_norm, outline_width=1.0))
         self._img_pressed = ImageTk.PhotoImage(render_capsule_image(width, height, fill_press, out_norm, outline_width=1.0))
@@ -524,6 +584,7 @@ class CapsuleButton(tk.Canvas):
         self.bind("<Leave>", self._on_leave)
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Configure>", self._on_configure)
 
         self.tag_bind(self.img_id, "<Enter>", self._on_enter)
         self.tag_bind(self.img_id, "<Leave>", self._on_leave)
@@ -535,23 +596,43 @@ class CapsuleButton(tk.Canvas):
         self.tag_bind(self.txt_id, "<ButtonPress-1>", self._on_press)
         self.tag_bind(self.txt_id, "<ButtonRelease-1>", self._on_release)
 
+    def _on_configure(self, event: tk.Event) -> None:
+        if event.width > 20 and event.width != self.w:
+            self.w = event.width
+            self._img_normal = ImageTk.PhotoImage(render_capsule_image(self.w, self.h, self._fill_norm, self._out_norm, outline_width=1.0))
+            self._img_hover = ImageTk.PhotoImage(render_capsule_image(self.w, self.h, self._fill_hov, self._out_norm, outline_width=1.0))
+            self._img_pressed = ImageTk.PhotoImage(render_capsule_image(self.w, self.h, self._fill_press, self._out_norm, outline_width=1.0))
+            current_img = self._img_pressed if self._is_pressed else self._img_normal
+            self.itemconfig(self.img_id, image=current_img)
+            self.coords(self.txt_id, self.w // 2, self.h // 2)
+
     def _on_enter(self, _event: Optional[tk.Event] = None) -> None:
+        if self._state == "disabled":
+            return
         if not self._is_pressed:
             self.itemconfig(self.img_id, image=self._img_hover)
 
     def _on_leave(self, _event: Optional[tk.Event] = None) -> None:
+        if self._state == "disabled":
+            return
         self._is_pressed = False
         self.itemconfig(self.img_id, image=self._img_normal)
 
     def _on_press(self, _event: Optional[tk.Event] = None) -> None:
+        if self._state == "disabled":
+            return
         self._is_pressed = True
         self.itemconfig(self.img_id, image=self._img_pressed)
 
     def _on_click(self, _event: Optional[tk.Event] = None) -> None:
+        if self._state == "disabled":
+            return
         if self.command:
             self.command()
 
     def _on_release(self, event: Optional[tk.Event] = None) -> None:
+        if self._state == "disabled":
+            return
         if self._is_pressed:
             self._is_pressed = False
             self.itemconfig(self.img_id, image=self._img_hover)
@@ -564,6 +645,16 @@ class CapsuleButton(tk.Canvas):
     def config(self, **kwargs) -> None:
         if "text" in kwargs:
             self.set_text(kwargs.pop("text"))
+        if "state" in kwargs:
+            st = kwargs.pop("state")
+            self._state = st
+            if st == "disabled":
+                self.itemconfig(self.txt_id, fill="#64748b")
+                self.config_cursor = getattr(self, "config_cursor", self.cget("cursor"))
+                super().config(cursor="arrow")
+            else:
+                self.itemconfig(self.txt_id, fill=self._fg_norm)
+                super().config(cursor="hand2")
         if kwargs:
             super().config(**kwargs)
 

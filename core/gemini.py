@@ -10,7 +10,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Optional
 
 
@@ -455,44 +457,13 @@ class GeminiVisionClient:
         """Returns True if an API key is available."""
         return bool(self._api_key and self._api_key.strip())
 
-    def analyze_image(
-        self,
-        image_path: Path,
-        prompt: str = "Опиши подробно, что изображено на этом снимке экрана. Если здесь текст или ошибка кода, объясни суть и решение.",
-    ) -> str:
-        """Sends image to Gemini Vision API with specified prompt and returns textual response."""
+    def _execute_generate_content(self, payload: dict, timeout: float = 35.0) -> str:
+        """Executes generateContent request to Gemini API with automatic SNI proxy failover and sanitized logs."""
         if not self.is_configured:
             raise ValueError(
                 "GEMINI_API_KEY не задан! Задайте переменную окружения GEMINI_API_KEY "
                 "или получите бесплатный ключ в Google AI Studio: https://aistudio.google.com/"
             )
-
-        if not image_path.is_file():
-            raise FileNotFoundError(f"Файл изображения не найден: {image_path}")
-
-        # Read and encode image to base64
-        with open(image_path, "rb") as f:
-            image_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/png",
-                                "data": image_b64,
-                            }
-                        },
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "temperature": 0.2,
-                "maxOutputTokens": 1024,
-            },
-        }
 
         url = self.API_URL_TEMPLATE.format(model=self._model, api_key=self._api_key)
         data = json.dumps(payload).encode("utf-8")
@@ -504,7 +475,7 @@ class GeminiVisionClient:
         )
 
         try:
-            with self._opener.open(req, timeout=30) as response:
+            with self._opener.open(req, timeout=timeout) as response:
                 res_body = response.read().decode("utf-8")
                 parsed = json.loads(res_body)
 
@@ -516,7 +487,8 @@ class GeminiVisionClient:
                 return "".join(part.get("text", "") for part in parts).strip()
         except urllib.error.HTTPError as exc:
             err_msg = exc.read().decode("utf-8", errors="replace")
-            self._logger.error("Gemini API error (%d): %s", exc.code, err_msg)
+            safe_err = re.sub(r"key=[^&\s'\"]+", "key=***", err_msg)
+            self._logger.error("Gemini API error (%d): %s", exc.code, safe_err)
             if exc.code == 400 and ("User location is not supported" in err_msg or "FAILED_PRECONDITION" in err_msg):
                 if self._use_dns_ai and self._active_sni_ip:
                     _cooldown_sni_ips.add(self._active_sni_ip)
@@ -525,7 +497,7 @@ class GeminiVisionClient:
                         self._active_sni_ip = next_sni
                         self._opener = urllib.request.build_opener(DNSAIHTTPSHandler(next_sni))
                         try:
-                            with self._opener.open(req, timeout=30) as retry_resp:
+                            with self._opener.open(req, timeout=timeout) as retry_resp:
                                 parsed = json.loads(retry_resp.read().decode("utf-8"))
                                 candidates = parsed.get("candidates", [])
                                 if not candidates:
@@ -533,30 +505,30 @@ class GeminiVisionClient:
                                 parts = candidates[0].get("content", {}).get("parts", [])
                                 return "".join(part.get("text", "") for part in parts).strip()
                         except Exception as retry_exc:
-                            self._logger.warning("Retry with alternate SNI proxy %s failed: %s", next_sni, retry_exc)
+                            safe_retry_exc = re.sub(r"key=[^&\s'\"]+", "key=***", str(retry_exc))
+                            self._logger.warning("Retry with alternate SNI proxy %s failed: %s", next_sni, safe_retry_exc)
                 raise RuntimeError(
                     "Ошибка Gemini API (400): Текущая локация IP-адреса не поддерживается Google Gemini. "
-                    "В v2RayTun переключитесь на профиль США или Нидерланды (IP Timeweb блокируется Google)."
+                    "Включите прокси или переключитесь на профиль США/Нидерланды в настройках."
                 ) from exc
             if exc.code == 404:
                 raise RuntimeError(
                     f"Ошибка Gemini API (404): Модель '{self._model}' недоступна в Google API. "
                     f"Обновите название модели в настройках."
                 ) from exc
-            raise RuntimeError(f"Ошибка Gemini API ({exc.code}): {err_msg}") from exc
+            raise RuntimeError(f"Ошибка Gemini API ({exc.code}): {safe_err}") from exc
         except Exception as exc:
             if self._use_dns_ai:
                 global _cached_dns_ai_ip
                 if self._active_sni_ip:
                     _cooldown_sni_ips.add(self._active_sni_ip)
                 _cached_dns_ai_ip = None
-                # Try one automatic failover to next SNI proxy
                 next_sni = get_active_sni_proxy_ip(logger=self._logger, force_refresh=True)
                 if next_sni and next_sni != self._active_sni_ip:
                     self._active_sni_ip = next_sni
                     self._opener = urllib.request.build_opener(DNSAIHTTPSHandler(next_sni))
                     try:
-                        with self._opener.open(req, timeout=30) as retry_resp:
+                        with self._opener.open(req, timeout=timeout) as retry_resp:
                             parsed = json.loads(retry_resp.read().decode("utf-8"))
                             candidates = parsed.get("candidates", [])
                             if not candidates:
@@ -564,7 +536,136 @@ class GeminiVisionClient:
                             parts = candidates[0].get("content", {}).get("parts", [])
                             return "".join(part.get("text", "") for part in parts).strip()
                     except Exception as retry_exc:
-                        self._logger.warning("Retry with alternate SNI proxy %s failed: %s", next_sni, retry_exc)
-            self._logger.error("Network or parsing error in Gemini client: %s", exc)
-            raise RuntimeError(f"Сбой соединения с Gemini API: {exc}") from exc
+                        safe_retry = re.sub(r"key=[^&\s'\"]+", "key=***", str(retry_exc))
+                        self._logger.warning("Retry with alternate SNI proxy %s failed: %s", next_sni, safe_retry)
+            safe_exc = re.sub(r"key=[^&\s'\"]+", "key=***", str(exc))
+            self._logger.error("Network or parsing error in Gemini client: %s", safe_exc)
+            raise RuntimeError(f"Сбой соединения с Gemini API: {safe_exc}") from exc
+
+    def create_chat_session(
+        self,
+        image_path: Path,
+        ocr_text: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> "GeminiChatSession":
+        """Creates a new stateful multi-turn chat session for a screenshot."""
+        return GeminiChatSession(
+            client=self,
+            image_path=image_path,
+            ocr_text=ocr_text,
+            session_id=session_id,
+        )
+
+    def analyze_image(
+        self,
+        image_path: Path,
+        prompt: str = "Опиши подробно, что изображено на этом снимке экрана. Если здесь текст или ошибка кода, объясни суть и решение.",
+    ) -> str:
+        """Sends image to Gemini Vision API with specified prompt and returns textual response."""
+        if not self.is_configured:
+            raise ValueError("Google Gemini API-ключ не настроен. Укажите ключ в настройках или переменной GEMINI_API_KEY.")
+        session = self.create_chat_session(image_path)
+        return session.send_message(prompt)
+
+
+@dataclass
+class ChatMessage:
+    """Represents a single message in a Gemini multi-turn conversation."""
+
+    role: str  # "user" or "model"
+    text: str
+    timestamp: float = field(default_factory=time.time)
+
+
+class GeminiChatSession:
+    """Manages stateful multi-turn conversation context for a single screenshot capture."""
+
+    def __init__(
+        self,
+        client: GeminiVisionClient,
+        image_path: Path,
+        ocr_text: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> None:
+        self.client = client
+        self.image_path = Path(image_path)
+        self.ocr_text = (ocr_text or "").strip()
+        self.session_id = session_id or f"session_{int(time.time() * 1000)}"
+        self.history: list[ChatMessage] = []
+        self._contents: list[dict] = []
+        self._image_b64: Optional[str] = None
+        if self.image_path.is_file():
+            self._load_image()
+
+    def _load_image(self) -> None:
+        if not self.image_path.is_file():
+            raise FileNotFoundError(f"Файл изображения не найден: {self.image_path}")
+        with open(self.image_path, "rb") as f:
+            self._image_b64 = base64.b64encode(f.read()).decode("utf-8")
+
+    def send_message(self, prompt: str, timeout: float = 35.0) -> str:
+        """Sends user prompt in the session, updates history, and returns model response."""
+        if not self.client.is_configured:
+            raise ValueError("Google Gemini API-ключ не настроен. Укажите ключ в настройках или переменной GEMINI_API_KEY.")
+
+        prompt_clean = prompt.strip()
+        if not prompt_clean:
+            raise ValueError("Запрос не может быть пустым.")
+
+        is_first_turn = (len(self._contents) == 0)
+        parts: list[dict] = []
+
+        if is_first_turn:
+            if self._image_b64 is None:
+                self._load_image()
+            # Turn 0: Include optional OCR text as supplementary context, prompt, and image
+            if self.ocr_text:
+                full_text = f"[Распознанный текст на снимке (OCR)]:\n{self.ocr_text}\n\n[Запрос]: {prompt_clean}"
+            else:
+                full_text = prompt_clean
+
+            parts.append({"text": full_text})
+            parts.append({
+                "inline_data": {
+                    "mime_type": "image/png",
+                    "data": self._image_b64,
+                }
+            })
+        else:
+            # Subsequent turns: follow-up textual query in multi-turn context
+            parts.append({"text": prompt_clean})
+
+        user_content = {"role": "user", "parts": parts}
+        self._contents.append(user_content)
+
+        payload = {
+            "contents": list(self._contents),
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 2048,
+            },
+        }
+
+        try:
+            res_text = self.client._execute_generate_content(payload, timeout=timeout)
+            # Record assistant turn in internal API content and public history
+            self._contents.append({
+                "role": "model",
+                "parts": [{"text": res_text}],
+            })
+            self.history.append(ChatMessage(role="user", text=prompt_clean))
+            self.history.append(ChatMessage(role="model", text=res_text))
+            return res_text
+        except Exception:
+            # On error: rollback unfulfilled user turn to keep conversation consistent for retries
+            if self._contents and self._contents[-1] is user_content:
+                self._contents.pop()
+            raise
+
+    def get_last_response(self) -> str:
+        """Returns the text of the latest assistant message, or empty string."""
+        for msg in reversed(self.history):
+            if msg.role == "model":
+                return msg.text
+        return ""
 

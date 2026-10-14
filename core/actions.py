@@ -7,6 +7,79 @@ from pathlib import Path
 from typing import Optional
 
 
+def _translate_chunk(chunk: str, target_lang: str, log: logging.Logger) -> str:
+    """Translates a single chunk using resilient multi-tier fallbacks."""
+    # Strategy 1: Google Translate Chrome Extension endpoint (clients5) - highly reliable, no 429
+    try:
+        url = f"https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl={target_lang}"
+        post_data = urllib.parse.urlencode({"q": chunk}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=post_data,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=9) as res:
+            parsed = json.loads(res.read().decode("utf-8"))
+            if isinstance(parsed, list) and parsed:
+                if isinstance(parsed[0], list):
+                    res_txt = "".join(p[0] for p in parsed if isinstance(p, list) and p and isinstance(p[0], str))
+                    if res_txt:
+                        return res_txt
+                elif isinstance(parsed[0], str):
+                    return parsed[0]
+            elif isinstance(parsed, str) and parsed:
+                return parsed
+    except Exception as exc1:
+        log.debug("Primary translation endpoint (clients5) failed: %s", exc1)
+
+    # Strategy 2: Google Translate GTX endpoint (translate.googleapis.com)
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target_lang}&dt=t"
+        post_data = urllib.parse.urlencode({"q": chunk}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=post_data,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=9) as res:
+            parsed = json.loads(res.read().decode("utf-8"))
+            if isinstance(parsed, list) and parsed and isinstance(parsed[0], list):
+                res_txt = "".join([part[0] for part in parsed[0] if part and part[0]])
+                if res_txt:
+                    return res_txt
+    except Exception as exc2:
+        log.debug("Secondary translation endpoint (gtx) failed: %s", exc2)
+
+    # Strategy 3: MyMemory free translation API fallback
+    try:
+        sub_chunks = [chunk[i : i + 450] for i in range(0, len(chunk), 450)]
+        sub_res = []
+        for sc in sub_chunks:
+            mm_url = f"https://api.mymemory.translated.net/get?q={urllib.parse.quote(sc)}&langpair=auto|{target_lang}"
+            mm_req = urllib.request.Request(mm_url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+            with urllib.request.urlopen(mm_req, timeout=9) as mm_resp:
+                mm_data = json.loads(mm_resp.read().decode("utf-8"))
+                tr = mm_data.get("responseData", {}).get("translatedText", "")
+                if tr:
+                    sub_res.append(tr)
+                else:
+                    sub_res.append(sc)
+        if sub_res:
+            return "".join(sub_res)
+    except Exception as exc3:
+        log.warning("Tertiary translation endpoint (MyMemory) failed: %s", exc3)
+
+    raise RuntimeError("Все доступные сервисы перевода временно недоступны или ограничены по лимиту (429)")
+
+
 def translate_text(
     text: str,
     target_lang: str = "ru",
@@ -15,6 +88,7 @@ def translate_text(
     """Instantly translates text into target language using Google Translate API via POST.
 
     Supports arbitrarily large texts without HTTP 414 URL length limits.
+    Features automatic fallback across multiple providers to prevent HTTP 429 rate limit errors.
     """
     log = logger or logging.getLogger(__name__)
     clean_text = text.strip()
@@ -22,12 +96,6 @@ def translate_text(
         return ""
 
     try:
-        url = (
-            "https://translate.googleapis.com/translate_a/single?client=gtx"
-            f"&sl=auto&tl={target_lang}&dt=t"
-        )
-
-        # Chunk large text into <= 2500 character chunks if needed to respect API limits
         max_chunk = 2500
         if len(clean_text) <= max_chunk:
             chunks = [clean_text]
@@ -47,20 +115,7 @@ def translate_text(
 
         translated_parts = []
         for chunk in chunks:
-            post_data = urllib.parse.urlencode({"q": chunk}).encode("utf-8")
-            req = urllib.request.Request(
-                url,
-                data=post_data,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                    "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=10) as res:
-                data = json.loads(res.read().decode("utf-8"))
-                part_text = "".join([part[0] for part in data[0] if part and part[0]])
-                translated_parts.append(part_text)
+            translated_parts.append(_translate_chunk(chunk, target_lang=target_lang, log=log))
 
         return "".join(translated_parts).strip()
     except Exception as exc:

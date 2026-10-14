@@ -12,8 +12,9 @@ from PIL import ImageEnhance, ImageGrab, ImageTk
 from core.clipboard import copy_image_to_clipboard, get_clipboard_text, setup_universal_clipboard_shortcuts
 from core.models import CaptureArea, ScreenshotResult
 from core.actions import open_in_google_lens, translate_text
-from core.gemini import GeminiVisionClient
+from core.gemini import GeminiChatSession, GeminiVisionClient
 from core.ocr import create_ocr_engine
+from ui.ai_panel import AIExtendedChatWindow, AIPanelController
 from ui.text_selection_layer import SelectableTextLayer
 from ui.floating_hud import (
     CapsuleButton,
@@ -207,7 +208,7 @@ class ScreenAreaSelector:
             full_desktop_img = None
 
         # Pre-render anti-aliased 4-corner sprites via Pillow supersampling x4
-        corner_imgs = render_lens_corners(size=44, radius=16, leg=34, thickness=3)
+        corner_imgs = render_lens_corners(size=22, radius=4, leg=14, thickness=2.4)
 
         if self._root is None or not self._root.winfo_exists():
             self._root = tk.Tk()
@@ -251,7 +252,7 @@ class ScreenAreaSelector:
         if full_desktop_img:
             dimmed_img = ImageEnhance.Brightness(full_desktop_img).enhance(0.55)
             bg_photo = ImageTk.PhotoImage(dimmed_img)
-            canvas.create_image(0, 0, image=bg_photo, anchor=tk.NW)
+            canvas.create_image(0, 0, image=bg_photo, anchor=tk.NW, tags="bg_dimmed")
             canvas._bg_photo = bg_photo
 
         setup_universal_clipboard_shortcuts(root)
@@ -337,6 +338,8 @@ class ScreenAreaSelector:
         cached_tr_result: list[Optional[str]] = [None]
         cached_tr_lang: list[Optional[str]] = [None]
         cached_tr_box: list[Optional[tuple[int, int, int, int]]] = [None]
+        cached_ai_session: list[Optional[GeminiChatSession]] = [None]
+        cached_ai_box: list[Optional[tuple[int, int, int, int]]] = [None]
         shot_ref: list[Optional[ScreenshotResult]] = [None]
 
         def show_copied_toast(msg: str = "✓ Скопировано в буфер!"):
@@ -400,6 +403,8 @@ class ScreenAreaSelector:
             cached_tr_result[0] = None
             cached_tr_lang[0] = None
             cached_tr_box[0] = None
+            cached_ai_session[0] = None
+            cached_ai_box[0] = None
             if text_layer.is_active:
                 text_layer.hide()
 
@@ -407,10 +412,12 @@ class ScreenAreaSelector:
             nonlocal cutout_img_id
             if not full_desktop_img:
                 return
+            w = max(1, bx2 - bx1)
+            h = max(1, by2 - by1)
             cropped = full_desktop_img.crop((bx1, by1, bx2, by2))
             cutout_photo = ImageTk.PhotoImage(cropped)
             if cutout_img_id is None:
-                cutout_img_id = canvas.create_image(bx1, by1, image=cutout_photo, anchor=tk.NW)
+                cutout_img_id = canvas.create_image(bx1, by1, image=cutout_photo, anchor=tk.NW, tags="cutout_preview")
             else:
                 canvas.coords(cutout_img_id, bx1, by1)
                 canvas.itemconfig(cutout_img_id, image=cutout_photo)
@@ -662,161 +669,94 @@ class ScreenAreaSelector:
         def action_ai():
             clear_active_card()
             lens_hud.set_active_mode("ai")
+            if box is None:
+                return
+
             t_path, shot = crop_and_save_current_selection()
+            shot_ref[0] = shot
+            crop_pil = full_desktop_img.crop(box).convert("RGB") if (full_desktop_img and box) else None
+
+            # Retrieve existing OCR text as grounding context if available for this box
+            supplementary_ocr = ""
+            if cached_ocr_box[0] == box and cached_ocr_result[0] is not None:
+                supplementary_ocr = cached_ocr_result[0].cleaned_text or ""
+
+            # Check if an existing chat session for this exact box is cached
+            session = None
+            if cached_ai_box[0] == box and cached_ai_session[0] is not None:
+                session = cached_ai_session[0]
+            else:
+                fresh_settings = db.get_settings() if db else (settings or None)
+                g_key = (fresh_settings.gemini_api_key if fresh_settings else "").strip()
+                g_model = (fresh_settings.gemini_model if fresh_settings else "") or "gemini-3.5-flash-lite"
+                g_proxy = (fresh_settings.gemini_proxy if fresh_settings else "").strip()
+                g_dns_ai = fresh_settings.gemini_use_dns_ai if fresh_settings else True
+
+                client = GeminiVisionClient(
+                    api_key=g_key or None,
+                    model=g_model,
+                    proxy_url=g_proxy or None,
+                    use_dns_ai=g_dns_ai,
+                    logger=self._logger,
+                )
+                session = client.create_chat_session(
+                    image_path=shot.image_path,
+                    ocr_text=supplementary_ocr,
+                )
+                cached_ai_session[0] = session
+                cached_ai_box[0] = box
 
             hw, hh = lens_hud.get_dimensions()
+            target_card_w = max(340, min(420, int(vw / 5.0)))
             controller = RoundedCardController(
                 canvas=canvas,
                 box=box if box else (0, 0, 100, 100),
                 hud_pos=(lens_hud.x, lens_hud.y, hw, hh),
                 screen_size=(vw, vh),
-                min_w=480,
-                pad_x=18,
+                min_w=target_card_w,
+                max_w=target_card_w + 40,
+                pad_x=14,
                 pad_y=14,
+                radius=20,
+                placement_mode="side_right",
             )
             active_controller[0] = controller
-            card_frame = controller.content_frame
 
-            title_f = tk.Frame(card_frame, bg="#222428")
-            title_f.pack(fill=tk.X)
-            tk.Label(title_f, text="Анализ Gemini Vision", font=("Segoe UI", 10, "bold"), fg="#ffffff", bg="#222428").pack(side=tk.LEFT)
+            def on_close_ai():
+                clear_active_card()
+                lens_hud.reset_active_mode()
 
-            ent = tk.Entry(
-                card_frame,
-                bg="#181a1d",
-                fg="#ffffff",
-                font=("Segoe UI", 9),
-                relief=tk.FLAT,
-                highlightthickness=1,
-                highlightbackground="#36393e",
-                insertbackground="#ffffff",
-            )
-            ent.insert(0, "Объясни, что здесь изображено / как решить ошибку")
-            ent.pack(fill=tk.X, pady=6)
-
-            txt_res = tk.Text(
-                card_frame,
-                wrap=tk.WORD,
-                height=6,
-                width=50,
-                bg="#181a1d",
-                fg="#e0e0e0",
-                insertbackground="#ffffff",
-                selectbackground="#404349",
-                selectforeground="#ffffff",
-                relief=tk.FLAT,
-                font=("Segoe UI", 9),
-                padx=10,
-                pady=8,
-                highlightthickness=1,
-                highlightbackground="#36393e",
-            )
-            txt_res.pack(fill=tk.X, expand=False, pady=6)
-
-            key_frame = tk.Frame(card_frame, bg="#222428")
-
-            def on_ask_click(event: Optional[tk.Event] = None):
-                prompt = ent.get().strip()
-                if not prompt:
-                    prompt = "Объясни, что здесь изображено / как решить ошибку"
-
-                txt_res.delete("1.0", tk.END)
-                txt_res.insert(tk.END, "Запрос к Gemini Vision...\n")
-                controller.update_geometry()
-
-                def ai_worker():
+            def on_open_extended(sess: GeminiChatSession):
+                chat_win = AIExtendedChatWindow(
+                    parent=root,
+                    session=sess,
+                    crop_image=crop_pil,
+                    db=db,
+                    settings=settings,
+                    sound_fn=sound_fn,
+                    logger=self._logger,
+                )
+                root._active_chat_win = chat_win
+                safe_close_overlay(delay_ms=60)
+                if not inline_mode:
                     try:
-                        fresh_settings = db.get_settings() if db else (settings or None)
-                        g_key = (fresh_settings.gemini_api_key if fresh_settings else "").strip()
-                        g_model = fresh_settings.gemini_model if fresh_settings else "gemini-3.5-flash-lite"
-                        g_proxy = (fresh_settings.gemini_proxy if fresh_settings else "").strip()
-                        g_dns_ai = fresh_settings.gemini_use_dns_ai if fresh_settings else True
-                        client = GeminiVisionClient(
-                            api_key=g_key or None,
-                            model=g_model,
-                            proxy_url=g_proxy or None,
-                            use_dns_ai=g_dns_ai,
-                            logger=self._logger,
-                        )
-                        if not client.is_configured:
-                            def show_key_input():
-                                txt_res.delete("1.0", tk.END)
-                                txt_res.insert(tk.END, "Ключ Gemini не найден! Вставьте Google AI Studio ключ ниже:")
-                                for w in key_frame.winfo_children():
-                                    w.destroy()
-                                key_frame.pack(fill=tk.X, pady=4)
-                                k_ent = tk.Entry(key_frame, bg="#181a1d", fg="#ffffff", relief=tk.FLAT, highlightthickness=1, highlightbackground="#36393e", insertbackground="#ffffff")
-                                k_ent.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+                        root.wait_window(chat_win)
+                    except Exception:
+                        pass
 
-                                def save_k(ev: Optional[tk.Event] = None):
-                                    val = k_ent.get().strip()
-                                    if val:
-                                        if db:
-                                            cur = db.get_settings()
-                                            cur.gemini_api_key = val
-                                            db.save_settings(cur)
-                                        key_frame.pack_forget()
-                                        on_ask_click()
-
-                                k_ent.bind("<Return>", lambda e: (save_k(), "break")[1])
-                                CapsuleButton(key_frame, text="Сохранить", style="primary", card_bg="#222428", command=save_k, height=28).pack(side=tk.RIGHT)
-                                controller.update_geometry()
-
-                            post_to_ui(show_key_input)
-                            return
-
-                        ans = client.analyze_image(shot.image_path, prompt=prompt)
-
-                        def set_ans(res_text=ans, ctrl=controller):
-                            if is_destroyed.is_set():
-                                return
-                            txt_res.delete("1.0", tk.END)
-                            txt_res.insert(tk.END, res_text)
-                            lines = len(res_text.splitlines())
-                            txt_res.config(height=min(10, max(5, lines)))
-                            ctrl.update_geometry()
-                            if db:
-                                db.add_history(image_path=str(shot.image_path), ocr_text="", gemini_result=res_text)
-
-                        post_to_ui(set_ans)
-                    except Exception as exc:
-                        err_msg = str(exc)
-                        self._logger.exception("Ошибка при обращении к Gemini Vision: %s", err_msg)
-
-                        def show_err(msg=err_msg, ctrl=controller):
-                            if is_destroyed.is_set():
-                                return
-                            txt_res.delete("1.0", tk.END)
-                            txt_res.insert(tk.END, f"Ошибка: {msg}")
-                            lines = len(msg.splitlines())
-                            txt_res.config(height=min(10, max(5, lines)))
-                            ctrl.update_geometry()
-
-                        post_to_ui(show_err)
-
-                threading.Thread(target=ai_worker, daemon=True).start()
-                return "break"
-
-            ent.bind("<Return>", on_ask_click)
-
-            def copy_ai():
-                val = txt_res.get("1.0", tk.END).strip()
-                if clipboard:
-                    clipboard.copy(val)
-                if sound_fn and settings and settings.sound_enabled:
-                    sound_fn(True)
-                lbl_notify.config(text="✓ Скопировано!", fg="#ffffff")
-                root.after(1500, lambda: lbl_notify.config(text="") if not is_destroyed.is_set() else None)
-
-            btn_box = tk.Frame(card_frame, bg="#222428")
-            btn_box.pack(fill=tk.X, pady=(2, 0))
-            CapsuleButton(btn_box, text="Спросить", style="primary", card_bg="#222428", command=on_ask_click, height=30).pack(side=tk.LEFT, padx=(0, 6))
-            CapsuleButton(btn_box, text="Скопировать", style="secondary", card_bg="#222428", command=copy_ai, height=30).pack(side=tk.LEFT, padx=(0, 6))
-            lbl_notify = tk.Label(btn_box, text="", font=("Segoe UI", 8), fg="#ffffff", bg="#222428")
-            lbl_notify.pack(side=tk.LEFT, padx=6)
-            CapsuleButton(btn_box, text="Закрыть", style="danger", card_bg="#222428", command=clear_active_card, height=30).pack(side=tk.RIGHT)
-
-            controller.update_geometry()
+            ai_panel = AIPanelController(
+                controller=controller,
+                session=session,
+                crop_image=crop_pil,
+                db=db,
+                settings=settings,
+                sound_fn=sound_fn,
+                on_close=on_close_ai,
+                on_open_extended=on_open_extended,
+                logger=self._logger,
+            )
+            controller.ai_panel = ai_panel
+            controller._thumb_photo = ai_panel._thumb_photo
 
         def action_copy():
             if current_state in ("text_select", "translate_select") and text_layer.is_active:
@@ -877,7 +817,7 @@ class ScreenAreaSelector:
 
         # Mouse Event Handlers
         def on_press(event: tk.Event) -> None:
-            nonlocal current_state, box, drag_handle, drag_start_mx, drag_start_my, orig_box
+            nonlocal current_state, box, drag_handle, drag_start_mx, drag_start_my, orig_box, cutout_img_id
             try:
                 canvas.focus_set()
             except Exception:
@@ -913,6 +853,9 @@ class ScreenAreaSelector:
                 else:
                     invalidate_ocr_cache()
                     clear_active_card()
+                    if cutout_img_id is not None:
+                        canvas.delete(cutout_img_id)
+                        cutout_img_id = None
                     canvas.delete("lens_corners")
                     canvas.delete("lens_badge")
                     lens_hud.hide()
@@ -923,6 +866,11 @@ class ScreenAreaSelector:
             orig_box = (event.x, event.y, event.x, event.y)
             invalidate_ocr_cache()
             clear_active_card()
+            if cutout_img_id is not None:
+                canvas.delete(cutout_img_id)
+                cutout_img_id = None
+            canvas.delete("lens_corners")
+            canvas.delete("lens_badge")
             lens_hud.hide()
 
         def on_drag(event: tk.Event) -> None:
@@ -950,7 +898,7 @@ class ScreenAreaSelector:
                 position_hud(animate=False)
 
         def on_release(event: tk.Event) -> None:
-            nonlocal current_state, box, drag_handle
+            nonlocal current_state, box, drag_handle, cutout_img_id
             if current_state in ("text_select", "translate_select"):
                 text_layer.handle_release(event.x, event.y)
                 return
@@ -962,6 +910,9 @@ class ScreenAreaSelector:
                 w = box[2] - box[0]
                 h = box[3] - box[1]
                 if w < 16 or h < 16:
+                    if cutout_img_id is not None:
+                        canvas.delete(cutout_img_id)
+                        cutout_img_id = None
                     canvas.delete("lens_corners")
                     canvas.delete("lens_badge")
                     lens_hud.hide()
@@ -1070,10 +1021,16 @@ class ScreenAreaSelector:
         canvas.bind_all("<Return>", on_key_enter)
 
         def cleanup_resources():
-            nonlocal full_desktop_img
+            nonlocal full_desktop_img, cutout_img_id
             is_destroyed.set()
             text_layer.clear()
             clear_active_card()
+            if cutout_img_id is not None:
+                try:
+                    canvas.delete(cutout_img_id)
+                except Exception:
+                    pass
+                cutout_img_id = None
             if hasattr(canvas, "_bg_photo"):
                 canvas._bg_photo = None
             if hasattr(canvas, "_cutout_photo"):

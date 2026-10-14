@@ -181,6 +181,7 @@ class SelectableTextLayer:
     TAG_SELECTION = "ocr_selection_elem"
     TAG_HOVER = "ocr_hover_elem"
     TAG_FLOAT_BTN = "ocr_float_copy_btn"
+    TAG_DETECTED_BOX = "ocr_detected_box"
 
     def __init__(
         self,
@@ -207,6 +208,8 @@ class SelectableTextLayer:
         self.cutout_item_id: Optional[int] = None
         self.original_crop_photo: Optional[tk.PhotoImage] = None
         self._active_crop_photo: Optional[ImageTk.PhotoImage] = None
+        self._detected_crop_photo: Optional[ImageTk.PhotoImage] = None
+        self._detected_crop_img: Optional[Image.Image] = None
 
         self._drag_start_word_idx: Optional[int] = None
         self._drag_start_xy: Optional[tuple[int, int]] = None
@@ -474,6 +477,110 @@ class SelectableTextLayer:
 
         return (24, 26, 30)
 
+    def _render_detected_boxes(self) -> None:
+        """Renders subtle, minimally visible bounding frames around recognized text regions.
+        Frame color dynamically contrasts with the local background (dark on light, light on dark)
+        with 1px minimal width and soft translucent opacity.
+        """
+        self.canvas.delete(self.TAG_DETECTED_BOX)
+        if not self.regions:
+            return
+
+        bx1, by1, bx2, by2 = self.box
+        raw_boxes: list[tuple[float, float, float, float, int]] = []
+        for reg in self.regions:
+            line_h = max(8.0, reg.y2 - reg.y1)
+            v_pad = max(2.0, min(5.0, line_h * 0.16))
+            rx1 = max(float(bx1 + 1), reg.x1 - 1.0)
+            rx2 = min(float(bx2 - 1), reg.x2 + 1.0)
+            ry1 = max(float(by1 + 1), reg.y1 - v_pad)
+            ry2 = min(float(by2 - 1), reg.y2 + v_pad)
+            if rx2 > rx1 and ry2 > ry1:
+                raw_boxes.append((rx1, ry1, rx2, ry2, reg.region_id))
+
+        if not raw_boxes:
+            return
+
+        # Sort top-to-bottom and resolve neighboring vertical overlaps
+        raw_boxes.sort(key=lambda b: b[1])
+        detected_boxes: list[tuple[float, float, float, float, int]] = [raw_boxes[0]]
+        for curr in raw_boxes[1:]:
+            prev_x1, prev_y1, prev_x2, prev_y2, prev_id = detected_boxes[-1]
+            c_x1, c_y1, c_x2, c_y2, c_id = curr
+            if prev_y2 >= c_y1:
+                mid = (prev_y2 + c_y1) / 2.0
+                detected_boxes[-1] = (prev_x1, prev_y1, prev_x2, mid - 0.5, prev_id)
+                c_y1 = mid + 0.5
+            detected_boxes.append((c_x1, c_y1, c_x2, c_y2, c_id))
+
+        has_blended = False
+        if self.crop_img is not None and self.cutout_item_id is not None:
+            try:
+                base_rgba = self.crop_img.convert("RGBA")
+                overlay = Image.new("RGBA", base_rgba.size, (0, 0, 0, 0))
+                draw = ImageDraw.Draw(overlay)
+                cw, ch = base_rgba.size
+
+                for rx1, ry1, rx2, ry2, _ in detected_boxes:
+                    cx1 = max(0, min(cw, int(round(rx1 - bx1))))
+                    cy1 = max(0, min(ch, int(round(ry1 - by1))))
+                    cx2 = max(0, min(cw, int(round(rx2 - bx1))))
+                    cy2 = max(0, min(ch, int(round(ry2 - by1))))
+                    if cx2 > cx1 and cy2 > cy1:
+                        bg_col = self._estimate_local_bg(rx1, ry1, rx2, ry2)
+                        lum = 0.2126 * bg_col[0] + 0.7152 * bg_col[1] + 0.0722 * bg_col[2]
+                        if lum > 135:
+                            # Light background -> subtle dark frame
+                            outline_rgba = (20, 22, 26, 80)
+                            fill_rgba = (20, 22, 26, 10)
+                        else:
+                            # Dark background -> subtle light frame
+                            outline_rgba = (245, 248, 255, 90)
+                            fill_rgba = (245, 248, 255, 12)
+
+                        draw.rounded_rectangle(
+                            [cx1, cy1, cx2, cy2],
+                            radius=3,
+                            fill=fill_rgba,
+                            outline=outline_rgba,
+                            width=1,
+                        )
+
+                self._detected_crop_img = Image.alpha_composite(base_rgba, overlay)
+                self._detected_crop_photo = ImageTk.PhotoImage(self._detected_crop_img)
+                self.canvas.itemconfig(self.cutout_item_id, image=self._detected_crop_photo)
+                has_blended = True
+            except Exception as e:
+                self._logger.debug("Detected boxes alpha composite failed: %s", e)
+                has_blended = False
+
+        # Create canvas items for test detection, accessibility, and fallback
+        for rx1, ry1, rx2, ry2, _ in detected_boxes:
+            if has_blended:
+                self.canvas.create_rectangle(
+                    rx1,
+                    ry1,
+                    rx2,
+                    ry2,
+                    fill="",
+                    outline="",
+                    tags=(self.TAG_LAYER, self.TAG_DETECTED_BOX),
+                )
+            else:
+                bg_col = self._estimate_local_bg(rx1, ry1, rx2, ry2)
+                lum = 0.2126 * bg_col[0] + 0.7152 * bg_col[1] + 0.0722 * bg_col[2]
+                fallback_col = "#555860" if lum > 135 else "#c5c8d0"
+                self.canvas.create_rectangle(
+                    rx1,
+                    ry1,
+                    rx2,
+                    ry2,
+                    fill="",
+                    outline=fallback_col,
+                    width=1,
+                    tags=(self.TAG_LAYER, self.TAG_DETECTED_BOX),
+                )
+
     def load_translation(
         self,
         ocr_result: OCRResult,
@@ -485,6 +592,7 @@ class SelectableTextLayer:
     ) -> int:
         """Builds words and regions from translated text mapped over original OCR layout.
         Uses underlay plates to mask original text and crisp translated typography.
+        Strictly preserves original geometry and clamps all content inside selection box.
         """
         self.clear()
         self.mode = "translate"
@@ -582,11 +690,26 @@ class SelectableTextLayer:
                     "h": ly2 - ly1,
                 }])
 
-        # Align translated lines to OCR lines
+        # Align translated lines to OCR lines while repeating original geometry
         n_ocr = len(parsed_lines_raw)
         n_tr = len(tr_lines)
         if n_tr == n_ocr:
             mapped_tr_lines = tr_lines
+        elif n_tr == 1 and n_ocr > 1:
+            # Distribute single translated paragraph across original lines proportionally
+            tokens_all = clean_tr.split()
+            ocr_weights = [max(1, sum(len(w["text"]) for w in line)) for line in parsed_lines_raw]
+            total_weight = sum(ocr_weights)
+            mapped_tr_lines = []
+            cur_tok_idx = 0
+            for idx, w_val in enumerate(ocr_weights):
+                if idx == n_ocr - 1:
+                    mapped_tr_lines.append(" ".join(tokens_all[cur_tok_idx:]))
+                else:
+                    share = max(1, round(len(tokens_all) * (w_val / total_weight)))
+                    share = min(share, max(1, len(tokens_all) - cur_tok_idx - (n_ocr - 1 - idx)))
+                    mapped_tr_lines.append(" ".join(tokens_all[cur_tok_idx:cur_tok_idx + share]))
+                    cur_tok_idx += share
         elif n_tr < n_ocr:
             mapped_tr_lines = tr_lines + [""] * (n_ocr - n_tr)
         else:
@@ -629,39 +752,47 @@ class SelectableTextLayer:
             line_h = max(8.0, stable_y2 - stable_y1)
             orig_x1 = min(w["x1"] for w in line_w)
             orig_x2 = max(w["x2"] for w in line_w)
+            orig_w = max(20.0, orig_x2 - orig_x1)
 
-            font_sz = max(9, min(22, int(line_h * 0.62)))
-            try:
-                fnt = tkfont.Font(root=self.root, family="Segoe UI", size=font_sz)
-                word_widths = [max(4.0, float(fnt.measure(t))) for t in tokens]
-                space_w = max(3.0, float(fnt.measure(" ")))
-            except Exception:
-                word_widths = [max(4.0, float(len(t) * font_sz * 0.6)) for t in tokens]
-                space_w = max(3.0, float(font_sz * 0.4))
+            # Strictly clamp start coordinate inside selection box
+            reg_x1 = max(float(bx1 + 4), min(float(bx2 - 24), orig_x1 - 2.0))
+            max_allowed_w = max(20.0, float(bx2 - 4 - reg_x1))
 
-            total_w = sum(word_widths) + max(0, len(tokens) - 1) * space_w
+            # Target geometry repeats original width with up to 15% tolerance, bounded by box
+            target_w = min(max_allowed_w, max(orig_w + 4.0, orig_w * 1.15))
 
-            # Adaptive font size shrink if text exceeds available box width
-            avail_w = max(40.0, float(bx2 - orig_x1 - 8.0))
-            if total_w > avail_w and font_sz > 8:
-                scale = avail_w / total_w
-                new_sz = max(8, int(font_sz * scale))
-                if new_sz < font_sz:
-                    font_sz = new_sz
-                    try:
-                        fnt = tkfont.Font(root=self.root, family="Segoe UI", size=font_sz)
-                        word_widths = [max(4.0, float(fnt.measure(t))) for t in tokens]
-                        space_w = max(3.0, float(fnt.measure(" ")))
-                    except Exception:
-                        word_widths = [max(4.0, float(len(t) * font_sz * 0.6)) for t in tokens]
-                        space_w = max(3.0, float(font_sz * 0.4))
-                    total_w = sum(word_widths) + max(0, len(tokens) - 1) * space_w
+            font_sz = max(8, min(22, int(line_h * 0.62)))
 
-            reg_x1 = max(float(bx1 + 2), orig_x1 - 2.0)
-            reg_x2 = min(float(bx2 - 2), max(orig_x2 + 2.0, reg_x1 + total_w + 4.0))
+            def _measure(f_sz: int) -> tuple[list[float], float, float]:
+                try:
+                    fnt = tkfont.Font(root=self.root, family="Segoe UI", size=f_sz)
+                    w_w = [max(3.0, float(fnt.measure(t))) for t in tokens]
+                    s_w = max(2.0, float(fnt.measure(" ")))
+                except Exception:
+                    w_w = [max(3.0, float(len(t) * f_sz * 0.58)) for t in tokens]
+                    s_w = max(2.0, float(f_sz * 0.35))
+                tot = sum(w_w) + max(0, len(tokens) - 1) * s_w
+                return w_w, s_w, tot
+
+            word_widths, space_w, total_w = _measure(font_sz)
+
+            # Adaptive font size shrink if text exceeds target geometry
+            if total_w > target_w and font_sz > 7:
+                scaled_sz = max(7, int(font_sz * (target_w / total_w)))
+                if scaled_sz < font_sz:
+                    font_sz = scaled_sz
+                    word_widths, space_w, total_w = _measure(font_sz)
+
+            # Further shrink if still exceeds max allowed width in box
+            if total_w > max_allowed_w and font_sz > 6:
+                scaled_sz = max(6, int(font_sz * (max_allowed_w / total_w)))
+                if scaled_sz < font_sz:
+                    font_sz = scaled_sz
+                    word_widths, space_w, total_w = _measure(font_sz)
 
             # Sample local background color and determine high-contrast text color
-            bg_col = self._estimate_local_bg(reg_x1, stable_y1, reg_x2, stable_y2)
+            temp_x2 = min(float(bx2 - 2), max(orig_x2 + 2.0, reg_x1 + total_w + 4.0))
+            bg_col = self._estimate_local_bg(reg_x1, stable_y1, temp_x2, stable_y2)
             lum = 0.2126 * bg_col[0] + 0.7152 * bg_col[1] + 0.0722 * bg_col[2]
             fg_col = "#1f1f1f" if lum > 140 else "#ffffff"
 
@@ -671,22 +802,32 @@ class SelectableTextLayer:
 
             for tok_idx, tok in enumerate(tokens):
                 ww = word_widths[tok_idx]
+                if cur_x + ww > bx2 - 4:
+                    tw_x2 = min(float(bx2 - 4), cur_x + ww)
+                    tw_x1 = min(tw_x2 - 1.0, cur_x)
+                else:
+                    tw_x1 = cur_x
+                    tw_x2 = cur_x + ww
+
                 tw = TextWord(
                     index=global_word_idx,
                     line_index=l_idx,
                     region_index=region_id,
                     word_index_in_region=tok_idx,
                     text=tok,
-                    x1=cur_x,
+                    x1=tw_x1,
                     y1=stable_y1,
-                    x2=cur_x + ww,
+                    x2=tw_x2,
                     y2=stable_y2,
                 )
                 global_word_idx += 1
                 reg_words.append(tw)
                 all_words.append(tw)
                 line_words_accum.append(tw)
-                cur_x += ww + space_w
+                cur_x = min(float(bx2 - 4), tw_x2 + space_w)
+
+            actual_right = max((w.x2 for w in reg_words), default=reg_x1 + 4.0)
+            reg_x2 = min(float(bx2 - 2), max(orig_x2 + 2.0, actual_right + 2.0))
 
             region = TextRegion(
                 region_id=region_id,
@@ -694,7 +835,7 @@ class SelectableTextLayer:
                 words=reg_words,
                 x1=reg_x1,
                 y1=stable_y1,
-                x2=max(reg_x2, cur_x),
+                x2=reg_x2,
                 y2=stable_y2,
                 bg_color=bg_col,
                 fg_color=fg_col,
@@ -713,7 +854,7 @@ class SelectableTextLayer:
 
     def show(self) -> None:
         """Activates text or translate selection mode.
-        In text mode, original screenshot remains 100% untouched with invisible hitboxes.
+        In text mode, original screenshot displays subtle detected bounding frames with invisible hitboxes.
         In translate mode, underlay plates mask original text and crisp translated typography is rendered.
         """
         self.canvas.delete(self.TAG_LAYER)
@@ -724,24 +865,32 @@ class SelectableTextLayer:
         except Exception:
             pass
 
+        bx1, by1, bx2, by2 = self.box
+
         if self.mode == "translate":
             # 1. Underlay plates to mask original text
             for reg in self.regions:
-                self.canvas.create_rectangle(
-                    reg.x1 - 2,
-                    reg.y1 - 1,
-                    reg.x2 + 2,
-                    reg.y2 + 1,
-                    fill=reg.hex_bg,
-                    outline=reg.hex_bg,
-                    tags=(self.TAG_LAYER, self.TAG_UNDERLAY, f"underlay_{reg.region_id}"),
-                )
+                ux1 = max(float(bx1 + 2), reg.x1 - 2.0)
+                uy1 = max(float(by1 + 2), reg.y1 - 1.0)
+                ux2 = min(float(bx2 - 2), reg.x2 + 2.0)
+                uy2 = min(float(by2 - 2), reg.y2 + 1.0)
+                if ux2 > ux1 and uy2 > uy1:
+                    self.canvas.create_rectangle(
+                        ux1,
+                        uy1,
+                        ux2,
+                        uy2,
+                        fill=reg.hex_bg,
+                        outline=reg.hex_bg,
+                        tags=(self.TAG_LAYER, self.TAG_UNDERLAY, f"underlay_{reg.region_id}"),
+                    )
 
             # 2. Crisp translated words
             for w in self.words:
                 reg = self.regions[w.region_index] if w.region_index < len(self.regions) else None
                 fg = getattr(reg, "fg_color", "#ffffff") if reg else "#ffffff"
                 f_sz = getattr(reg, "font_size", 10) if reg else 10
+                max_txt_w = max(10, int(bx2 - 2 - w.x1))
                 self.canvas.create_text(
                     w.x1,
                     (w.y1 + w.y2) / 2.0,
@@ -749,20 +898,28 @@ class SelectableTextLayer:
                     fill=fg,
                     font=("Segoe UI", f_sz),
                     anchor=tk.W,
+                    width=max_txt_w,
                     tags=(self.TAG_LAYER, self.TAG_WORD, f"word_{w.index}"),
                 )
+        elif self.mode == "text":
+            self._render_detected_boxes()
 
         # Create invisible interactive area hitboxes over text regions
         for reg in self.regions:
-            self.canvas.create_rectangle(
-                reg.x1,
-                reg.y1,
-                reg.x2,
-                reg.y2,
-                fill="",
-                outline="",
-                tags=(self.TAG_LAYER, self.TAG_REGION, f"reg_{reg.region_id}"),
-            )
+            hx1 = max(float(bx1 + 1), reg.x1)
+            hy1 = max(float(by1 + 1), reg.y1)
+            hx2 = min(float(bx2 - 1), reg.x2)
+            hy2 = min(float(by2 - 1), reg.y2)
+            if hx2 > hx1 and hy2 > hy1:
+                self.canvas.create_rectangle(
+                    hx1,
+                    hy1,
+                    hx2,
+                    hy2,
+                    fill="",
+                    outline="",
+                    tags=(self.TAG_LAYER, self.TAG_REGION, f"reg_{reg.region_id}"),
+                )
 
     def hide(self) -> None:
         """Deactivates text selection mode and removes all selection highlights."""
@@ -780,6 +937,8 @@ class SelectableTextLayer:
             except Exception:
                 pass
         self._active_crop_photo = None
+        self._detected_crop_photo = None
+        self._detected_crop_img = None
 
     def clear(self) -> None:
         """Full cleanup."""
@@ -791,6 +950,8 @@ class SelectableTextLayer:
         self.cutout_item_id = None
         self.original_crop_photo = None
         self._active_crop_photo = None
+        self._detected_crop_photo = None
+        self._detected_crop_img = None
 
     # Hit Testing
     def hit_test_word(self, mx: int, my: int) -> Optional[TextWord]:
@@ -905,20 +1066,24 @@ class SelectableTextLayer:
                     base_fg = getattr(reg, "fg_color", "#ffffff") if reg else "#ffffff"
                     self.canvas.itemconfig(f"word_{w.index}", fill=base_fg)
             else:
-                if self.cutout_item_id is not None and self.original_crop_photo is not None:
-                    try:
-                        self.canvas.itemconfig(self.cutout_item_id, image=self.original_crop_photo)
-                    except Exception:
-                        pass
+                if self.cutout_item_id is not None:
+                    target_photo = self._detected_crop_photo if self._detected_crop_photo is not None else self.original_crop_photo
+                    if target_photo is not None:
+                        try:
+                            self.canvas.itemconfig(self.cutout_item_id, image=target_photo)
+                        except Exception:
+                            pass
             return
 
         sel_words = [w for w in self.words if w.index in self.selected_indices]
         if not sel_words:
-            if self.mode == "text" and self.cutout_item_id is not None and self.original_crop_photo is not None:
-                try:
-                    self.canvas.itemconfig(self.cutout_item_id, image=self.original_crop_photo)
-                except Exception:
-                    pass
+            if self.mode == "text" and self.cutout_item_id is not None:
+                target_photo = self._detected_crop_photo if self._detected_crop_photo is not None else self.original_crop_photo
+                if target_photo is not None:
+                    try:
+                        self.canvas.itemconfig(self.cutout_item_id, image=target_photo)
+                    except Exception:
+                        pass
             return
 
         # 1. Collect cohesive continuous sub-rectangles per region with increased selection height
@@ -948,19 +1113,26 @@ class SelectableTextLayer:
                 c_y1 = mid + 0.5
             highlight_boxes.append((c_x1, c_y1, c_x2, c_y2))
 
+        bx1, by1, bx2, by2 = self.box
+
         if self.mode == "translate":
             # In translate mode, highlight with Google Blue rectangles and crisp white text
             for rx1, ry1, rx2, ry2 in highlight_boxes:
-                self.canvas.create_rectangle(
-                    rx1 - 1,
-                    ry1,
-                    rx2 + 1,
-                    ry2,
-                    fill="#1a73e8",
-                    outline="#4285f4",
-                    width=1,
-                    tags=(self.TAG_LAYER, self.TAG_SELECTION),
-                )
+                hx1 = max(float(bx1 + 2), rx1 - 1)
+                hy1 = max(float(by1 + 2), ry1)
+                hx2 = min(float(bx2 - 2), rx2 + 1)
+                hy2 = min(float(by2 - 2), ry2)
+                if hx2 > hx1 and hy2 > hy1:
+                    self.canvas.create_rectangle(
+                        hx1,
+                        hy1,
+                        hx2,
+                        hy2,
+                        fill="#1a73e8",
+                        outline="#4285f4",
+                        width=1,
+                        tags=(self.TAG_LAYER, self.TAG_SELECTION),
+                    )
             for w in self.words:
                 reg = self.regions[w.region_index] if w.region_index < len(self.regions) else None
                 base_fg = getattr(reg, "fg_color", "#ffffff") if reg else "#ffffff"
@@ -971,12 +1143,12 @@ class SelectableTextLayer:
             self.canvas.tag_raise(self.TAG_WORD)
         else:
             # 2. Render smooth alpha-transparent highlight
-            bx1, by1, bx2, by2 = self.box
             has_blended_bg = False
 
             if self.crop_img is not None and self.cutout_item_id is not None:
                 try:
-                    base_rgba = self.crop_img.convert("RGBA")
+                    base_img = self._detected_crop_img if self._detected_crop_img is not None else self.crop_img
+                    base_rgba = base_img.convert("RGBA")
                     overlay = Image.new("RGBA", base_rgba.size, (0, 0, 0, 0))
                     draw = ImageDraw.Draw(overlay)
                     cw, ch = base_rgba.size
@@ -1006,29 +1178,34 @@ class SelectableTextLayer:
 
             # Canvas selection item (for hit-testing, tests, and outline definition)
             for rx1, ry1, rx2, ry2 in highlight_boxes:
-                if has_blended_bg:
-                    self.canvas.create_rectangle(
-                        rx1 - 1,
-                        ry1,
-                        rx2 + 1,
-                        ry2,
-                        fill="",
-                        outline="#4285f4",
-                        width=1,
-                        tags=(self.TAG_LAYER, self.TAG_SELECTION),
-                    )
-                else:
-                    self.canvas.create_rectangle(
-                        rx1 - 1,
-                        ry1,
-                        rx2 + 1,
-                        ry2,
-                        fill="#1a73e8",
-                        stipple="gray25",
-                        outline="#4285f4",
-                        width=1,
-                        tags=(self.TAG_LAYER, self.TAG_SELECTION),
-                    )
+                hx1 = max(float(bx1 + 1), rx1 - 1)
+                hy1 = max(float(by1 + 1), ry1)
+                hx2 = min(float(bx2 - 1), rx2 + 1)
+                hy2 = min(float(by2 - 1), ry2)
+                if hx2 > hx1 and hy2 > hy1:
+                    if has_blended_bg:
+                        self.canvas.create_rectangle(
+                            hx1,
+                            hy1,
+                            hx2,
+                            hy2,
+                            fill="",
+                            outline="#4285f4",
+                            width=1,
+                            tags=(self.TAG_LAYER, self.TAG_SELECTION),
+                        )
+                    else:
+                        self.canvas.create_rectangle(
+                            hx1,
+                            hy1,
+                            hx2,
+                            hy2,
+                            fill="#1a73e8",
+                            stipple="gray25",
+                            outline="#4285f4",
+                            width=1,
+                            tags=(self.TAG_LAYER, self.TAG_SELECTION),
+                        )
 
         # 2. Sleek Floating Copy Stadium Pill positioned relative to selection
         min_x = min(b[0] for b in highlight_boxes)

@@ -2248,6 +2248,196 @@ class TestGeminiDeprecationAndClipboardPolicy(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_ocr_detected_boxes_rendering(self):
+        """Verifies that subtle detected bounding frames are rendered on OCR detection
+        and cleaned up on hide.
+        """
+        import tkinter as tk
+        from PIL import Image
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            canvas = tk.Canvas(root, width=500, height=400)
+            canvas.pack()
+
+            layer = SelectableTextLayer(root=root, canvas=canvas)
+            test_img = Image.new("RGB", (300, 200), (250, 250, 250))
+            cutout_id = canvas.create_image(50, 50, anchor=tk.NW)
+
+            ocr_res = OCRResult(
+                image_path="dummy.png",
+                raw_text="Alpha Beta\nGamma Delta",
+                cleaned_text="Alpha Beta\nGamma Delta",
+                lines=[
+                    {"text": "Alpha Beta", "words": [
+                        {"text": "Alpha", "bounding_rect": {"x": 10.0, "y": 10.0, "width": 50.0, "height": 18.0}},
+                        {"text": "Beta", "bounding_rect": {"x": 70.0, "y": 10.0, "width": 45.0, "height": 18.0}},
+                    ]},
+                    {"text": "Gamma Delta", "words": [
+                        {"text": "Gamma", "bounding_rect": {"x": 10.0, "y": 45.0, "width": 55.0, "height": 18.0}},
+                        {"text": "Delta", "bounding_rect": {"x": 75.0, "y": 45.0, "width": 50.0, "height": 18.0}},
+                    ]},
+                ]
+            )
+
+            layer.load_from_ocr(ocr_res, (50, 50, 350, 250), crop_img=test_img, cutout_item_id=cutout_id)
+            layer.show()
+
+            detected_items = canvas.find_withtag(SelectableTextLayer.TAG_DETECTED_BOX)
+            self.assertGreaterEqual(len(detected_items), 2)
+            self.assertIsNotNone(layer._detected_crop_photo)
+
+            # Test deselect preserves detected photo
+            layer.selected_indices = {0}
+            layer.redraw_selection()
+            self.assertIsNotNone(layer._active_crop_photo)
+
+            layer.selected_indices.clear()
+            layer.redraw_selection()
+
+            # Test hide cleans up detected elements
+            layer.hide()
+            self.assertEqual(len(canvas.find_withtag(SelectableTextLayer.TAG_DETECTED_BOX)), 0)
+            self.assertIsNone(layer._detected_crop_photo)
+        finally:
+            root.destroy()
+
+    def test_translation_geometry_and_box_clamping(self):
+        """Verifies that translated text repeats original layout geometry and
+        strictly stays clamped within selection box boundaries without overflow.
+        """
+        import tkinter as tk
+        from PIL import Image
+        from ui.text_selection_layer import SelectableTextLayer
+        from core.models import OCRResult
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            canvas = tk.Canvas(root, width=600, height=400)
+            canvas.pack()
+
+            layer = SelectableTextLayer(root=root, canvas=canvas)
+            box = (100, 100, 320, 220)  # Width: 220, Height: 120
+            bx1, by1, bx2, by2 = box
+
+            ocr_res = OCRResult(
+                image_path="dummy.png",
+                raw_text="Short English sentence\nAnother line of original text",
+                cleaned_text="Short English sentence\nAnother line of original text",
+                lines=[
+                    {"text": "Short English sentence", "words": [
+                        {"text": "Short", "bounding_rect": {"x": 10.0, "y": 15.0, "width": 40.0, "height": 18.0}},
+                        {"text": "English", "bounding_rect": {"x": 55.0, "y": 15.0, "width": 50.0, "height": 18.0}},
+                        {"text": "sentence", "bounding_rect": {"x": 110.0, "y": 15.0, "width": 60.0, "height": 18.0}},
+                    ]},
+                    {"text": "Another line of original text", "words": [
+                        {"text": "Another", "bounding_rect": {"x": 10.0, "y": 50.0, "width": 55.0, "height": 18.0}},
+                        {"text": "line", "bounding_rect": {"x": 70.0, "y": 50.0, "width": 30.0, "height": 18.0}},
+                        {"text": "of", "bounding_rect": {"x": 105.0, "y": 50.0, "width": 15.0, "height": 18.0}},
+                        {"text": "original", "bounding_rect": {"x": 125.0, "y": 50.0, "width": 45.0, "height": 18.0}},
+                        {"text": "text", "bounding_rect": {"x": 175.0, "y": 50.0, "width": 30.0, "height": 18.0}},
+                    ]},
+                ]
+            )
+
+            # Very long translated text designed to test clamping limits
+            long_tr = (
+                "Очень длинное развернутое предложение на русском языке с подробным переводом\n"
+                "Вторая строка с еще более длинным развернутым объяснением контекста фразы"
+            )
+
+            layer.load_translation(ocr_res, long_tr, box)
+            layer.show()
+
+            # 1. Verify words coordinates are clamped inside bx2 - 4
+            for w in layer.words:
+                self.assertGreaterEqual(w.x1, bx1)
+                self.assertLessEqual(w.x2, bx2 - 2)
+
+            # 2. Verify region coordinates are clamped inside bx2 - 2
+            for reg in layer.regions:
+                self.assertGreaterEqual(reg.x1, bx1)
+                self.assertLessEqual(reg.x2, bx2 - 2)
+
+            # 3. Verify underlay canvas rectangles stay strictly inside box boundaries
+            underlay_ids = canvas.find_withtag(SelectableTextLayer.TAG_UNDERLAY)
+            self.assertGreater(len(underlay_ids), 0)
+            for u_id in underlay_ids:
+                coords = canvas.coords(u_id)
+                self.assertEqual(len(coords), 4)
+                ux1, uy1, ux2, uy2 = coords
+                self.assertGreaterEqual(ux1, bx1)
+                self.assertLessEqual(ux2, bx2)
+                self.assertGreaterEqual(uy1, by1)
+                self.assertLessEqual(uy2, by2)
+        finally:
+            root.destroy()
+
+    def test_card_placement_side_right_mode(self):
+        """Verifies that get_card_placement with placement_mode='side_right' places card
+        to the right when space allows, and clamps inside box when space is constrained.
+        """
+        from ui.floating_hud import get_card_placement
+
+        box = (200, 200, 500, 450)
+        card_w, card_h = 400, 250
+        hud_bar = (300, 470, 150, 42)
+
+        # Case 1: Ample space on the right (1920x1080)
+        cx1, cy1 = get_card_placement(
+            box=box,
+            card_w=card_w,
+            card_h=card_h,
+            hud_x=hud_bar[0],
+            hud_y=hud_bar[1],
+            hud_w=hud_bar[2],
+            hud_h=hud_bar[3],
+            screen_w=1920,
+            screen_h=1080,
+            placement_mode="side_right",
+        )
+        # Should be placed to the right of box[2] = 500 with gap=14 -> 514
+        self.assertEqual(cx1, 514)
+        self.assertEqual(cy1, box[1])
+
+        # Case 2: Constrained screen width (box near right edge)
+        box_edge = (600, 200, 950, 500)
+        cx2, cy2 = get_card_placement(
+            box=box_edge,
+            card_w=card_w,
+            card_h=card_h,
+            hud_x=hud_bar[0],
+            hud_y=hud_bar[1],
+            hud_w=hud_bar[2],
+            hud_h=hud_bar[3],
+            screen_w=1000,
+            screen_h=800,
+            placement_mode="side_right",
+        )
+        # Since 950 + 14 + 400 > 1000, placed inside selection frame
+        self.assertLessEqual(cx2 + card_w, 1000)
+        self.assertGreaterEqual(cx2, 0)
+
+    def test_render_lens_corners_geometry(self):
+        """Verifies that render_lens_corners generates crisp, anti-aliased 4-corner sprites."""
+        from ui.floating_hud import render_lens_corners
+
+        corners = render_lens_corners(size=22, radius=4, leg=14, thickness=2.4)
+        self.assertEqual(set(corners.keys()), {"nw", "ne", "sw", "se"})
+        for c_img in corners.values():
+            self.assertEqual(c_img.size, (22, 22))
+            self.assertEqual(c_img.mode, "RGBA")
+
+        # Also verifies default call
+        corners_def = render_lens_corners()
+        self.assertEqual(set(corners_def.keys()), {"nw", "ne", "sw", "se"})
+        for c_img in corners_def.values():
+            self.assertEqual(c_img.size, (22, 22))
+
 
 if __name__ == "__main__":
     import time
